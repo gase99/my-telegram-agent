@@ -1,10 +1,9 @@
-import { table, integer, text } from 'sdk/db';
+import { table, integer, text, sql } from 'sdk/db';
 
-// Your database tables go here as named exports. Deploying this file registers the
-// schema; applying the changes (a migration) updates the database.
-
-// Uncomment to define your first table:
-// export const users = table('users', {
-//   id:   integer('id').primaryKey({ autoIncrement: true }),
-//   name: text('name').notNull(),
-// });
+export const messages = table('messages', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  chatId: integer('chat_id').notNull(),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  created: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`)
+});

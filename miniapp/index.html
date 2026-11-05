@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>AI Coding Terminal</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --text: #00ff00;
+      --prompt-color: #58a6ff;
+      --border: #30363d;
+      --input-bg: #161b22;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0; height: 100vh; height: 100dvh; /* رفع مشکل کیبورد در موبایل */
+      display: flex; flex-direction: column;
+      background-color: var(--bg); color: var(--text);
+      font-family: 'Courier New', Courier, monospace;
+      overflow: hidden;
+    }
+    #terminal {
+      flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .line { margin-bottom: 8px; }
+    .command { color: #ffffff; }
+    .prompt { color: var(--prompt-color); font-weight: bold;}
+    .system { color: #d2a8ff; }
+    .error { color: #ff7b72; }
+    
+    #input-area {
+      display: flex; background: var(--input-bg); border-top: 1px solid var(--border);
+      padding: 10px; align-items: flex-end; flex-shrink: 0; padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+    #prompt-symbol {
+      color: var(--text); padding: 10px 5px 10px 10px; font-weight: bold; white-space: nowrap;
+    }
+    #command-input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: #ffffff; font-family: inherit; font-size: 15px; padding: 10px;
+      resize: none; max-height: 100px; min-height: 40px; line-height: 1.2;
+    }
+    #send-btn {
+      background: var(--prompt-color); color: #fff; border: none; border-radius: 5px;
+      padding: 10px 15px; margin-right: 5px; font-size: 16px; cursor: pointer;
+      font-weight: bold; display: flex; justify-content: center; align-items: center;
+    }
+    #send-btn:active { background: #79c0ff; }
+  </style>
+</head>
+<body>
+  <div id="terminal">
+    <div class="line system">Welcome to AI Coding Agent v1.1</div>
+    <div class="line system">Type your commands or code requests below.</div>
+    <div class="line">----------------------------------------</div>
+  </div>
+
+  <div id="input-area">
+    <div id="prompt-symbol">user@gase99bot:~$</div>
+    <textarea id="command-input" rows="1" placeholder="Write code..." autocomplete="off"></textarea>
+    <button id="send-btn">➤</button>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+    tg.setHeaderColor('#0d1117');
+
+    const terminal = document.getElementById('terminal');
+    const input = document.getElementById('command-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    let isProcessing = false;
+
+    // ارسال با کلیک روی دکمه
+    sendBtn.addEventListener('click', submitCommand);
+
+    // ارسال با زدن Enter (اگر Shift نگه داشته نشده باشد)
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault(); // جلوگیری از رفتن به خط بعد
+        submitCommand();
+      }
+    });
+
+    // بزرگ شدن خودکار کادر تایپ با تایپ کردن
+    input.addEventListener('input', function() {
+      this.style.height = '40px';
+      this.style.height = (this.scrollHeight) + 'px';
+    });
+
+    function submitCommand() {
+      if (isProcessing) return;
+      const command = input.value.trim();
+      if (!command) return;
+      
+      // ریست کردن کادر تایپ
+      input.value = '';
+      input.style.height = '40px';
+      
+      processCommand(command);
+    }
+
+    async function processCommand(cmd) {
+      isProcessing = true;
+      
+      appendLine('<span class="prompt">user@gase99bot:~$</span> <span class="command">' + escapeHtml(cmd) + '</span>');
+      
+      const loadingId = 'loading-' + Date.now();
+      appendLine('<span id="' + loadingId + '" class="system">System is thinking...</span>');
+      
+      let dots = 0;
+      const dotInterval = setInterval(() => {
+        dots = (dots + 1) % 4;
+        const el = document.getElementById(loadingId);
+        if (el) el.innerHTML = 'System is thinking' + '.'.repeat(dots);
+      }, 500);
+
+      tg.Serverless.call('agent', { prompt: cmd }, function (err, data) {
+        clearInterval(dotInterval);
+        
+        const loadingEl = document.getElementById(loadingId);
+        if (loadingEl) loadingEl.remove();
+
+        if (err) {
+          appendLine('<span class="error">Error: ' + escapeHtml(err.message) + '</span>');
+          isProcessing = false;
+        } else {
+          typeOutput(data.output);
+        }
+      });
+    }
+
+    function typeOutput(text) {
+      let i = 0;
+      const line = document.createElement('div');
+      line.className = 'line';
+      terminal.appendChild(line);
+      
+      terminal.scrollTop = terminal.scrollHeight;
+
+      const interval = setInterval(() => {
+        const chunk = text.substring(i, i + 3); // سرعت تایپ
+        line.innerHTML += escapeHtml(chunk).replace(/\n/g, '<br>');
+        i += 3;
+        
+        terminal.scrollTop = terminal.scrollHeight;
+
+        if (i >= text.length) {
+          clearInterval(interval);
+          appendLine('<span class="prompt">user@gase99bot:~$</span> <span style="opacity:0.5;">_</span>');
+          isProcessing = false;
+        }
+      }, 20);
+    }
+
+    function appendLine(html) {
+      const div = document.createElement('div');
+      div.className = 'line';
+      div.innerHTML = html;
+      terminal.appendChild(div);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function escapeHtml(unsafe) {
+      return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
