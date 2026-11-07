@@ -1,77 +1,198 @@
 <!DOCTYPE html>
-<html lang="fa">
+<html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Terminal AI Shell</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>دستیار هوشمند</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    body {
-      background-color: #0d1117;
-      color: #00ff66;
-      font-family: monospace;
-      margin: 0;
-      padding: 10px;
-      box-sizing: border-box;
+    :root {
+      color-scheme: light dark;
+      --bg: var(--tg-theme-bg-color, #faf9f6);
+      --text: var(--tg-theme-text-color, #292824);
+      --muted: var(--tg-theme-hint-color, #85817a);
+      --surface: var(--tg-theme-secondary-bg-color, #f0eee9);
+      --accent: #c9785d;
+      --border: color-mix(in srgb, var(--text) 12%, transparent);
+      --top: max(env(safe-area-inset-top, 0px), var(--tg-content-safe-area-inset-top, 0px));
+      --bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-content-safe-area-inset-bottom, 0px));
+      --height: 100dvh;
     }
-    #terminal {
-      white-space: pre-wrap;
-      word-break: break-all;
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: var(--tg-theme-bg-color, #242320); --text: var(--tg-theme-text-color, #eceae4); --muted: var(--tg-theme-hint-color, #a8a49c); --surface: var(--tg-theme-secondary-bg-color, #34332f); }
     }
-    .input-line {
-      display: flex;
-      margin-top: 5px;
-    }
-    .prompt {
-      color: #00bfff;
-      margin-right: 5px;
-    }
-    input {
-      background: transparent;
-      border: none;
-      color: #fff;
-      font-family: monospace;
-      outline: none;
-      width: 100%;
-    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif; }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app { height: var(--height); display: flex; flex-direction: column; overflow: hidden; }
+    header { flex: none; padding: calc(var(--top) + 16px) 22px 16px; border-bottom: 1px solid var(--border); }
+    .header-inner { max-width: 760px; margin: auto; display: flex; align-items: center; gap: 10px; }
+    .mark { color: var(--accent); font-size: 27px; line-height: 1; }
+    .brand { font-weight: 700; font-size: 15px; }
+    .brand small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); margin-top: 3px; }
+    main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .conversation { max-width: 760px; margin: auto; padding: 24px 20px 32px; }
+    .welcome { text-align: center; padding: clamp(70px, 17vh, 150px) 10px 40px; }
+    .welcome .mark { font-size: 43px; }
+    .welcome h1 { font-family: Georgia, Tahoma, serif; font-size: clamp(25px, 5vw, 34px); font-weight: 500; margin: 17px 0 10px; }
+    .welcome p { color: var(--muted); font-size: 14px; line-height: 1.9; margin: 0; }
+    .message { margin: 0 0 26px; line-height: 1.95; overflow-wrap: anywhere; }
+    .message.user { display: flex; justify-content: flex-start; }
+    .user .body { background: var(--surface); border-radius: 20px 20px 5px 20px; padding: 11px 16px; max-width: 85%; white-space: pre-wrap; }
+    .assistant-label { color: var(--accent); font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+    .assistant .body { font-size: 15px; }
+    .assistant .body p { margin: 0 0 12px; white-space: pre-wrap; }
+    .assistant .body p:last-child { margin-bottom: 0; }
+    .code-block { direction: ltr; unicode-bidi: isolate; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin: 14px 0; text-align: left; }
+    .code-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font: 12px monospace; }
+    .copy { border: 0; background: transparent; color: var(--muted); padding: 4px; }
+    pre { margin: 0; padding: 14px; overflow-x: auto; font: 13px/1.7 monospace; white-space: pre; }
+    details.tool { border: 1px solid var(--border); border-radius: 13px; margin: 12px 0 18px; background: var(--bg); }
+    details.tool summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; font-size: 13px; }
+    details.tool summary::-webkit-details-marker { display: none; }
+    .tool-label { flex: 1; }
+    .tool-result { border-top: 1px solid var(--border); padding: 12px 14px; color: var(--muted); white-space: pre-wrap; font-size: 13px; direction: auto; }
+    .status { color: #4e9b69; }
+    .status.error { color: #c65b53; }
+    .spinner { width: 15px; height: 15px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+    .thinking { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 13px; margin: 12px 0 24px; }
+    .dots { display: inline-flex; gap: 4px; direction: ltr; }
+    .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite ease-in-out; }
+    .dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+    footer { flex: none; padding: 10px 16px calc(var(--bottom) + 12px); background: var(--bg); }
+    .composer { max-width: 720px; margin: auto; border: 1px solid var(--border); border-radius: 20px; background: var(--bg); box-shadow: 0 4px 20px #0000000d; padding: 12px; }
+    textarea { display: block; width: 100%; resize: none; max-height: 150px; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.7; padding: 2px 4px; font-size: 16px; }
+    textarea::placeholder { color: var(--muted); }
+    .composer-actions { display: flex; justify-content: flex-end; align-items: center; margin-top: 8px; }
+    .send { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 11px; background: var(--accent); color: white; font-size: 20px; }
+    .send:disabled { opacity: .45; cursor: default; }
+    .footnote { text-align: center; color: var(--muted); font-size: 11px; margin: 8px 0 0; }
+    .splash { position: fixed; inset: 0; z-index: 9999; background: var(--bg); display: grid; place-items: center; text-align: center; transition: opacity .35s ease; }
+    .splash.is-leaving { opacity: 0; pointer-events: none; }
+    .splash .mark { font-size: 52px; }
+    .splash h2 { font-family: Georgia, Tahoma, serif; font-size: 23px; font-weight: 500; margin: 18px 0 8px; }
+    .splash p { color: var(--muted); font-size: 13px; }
+    .progress { width: 130px; height: 3px; background: var(--surface); border-radius: 4px; margin: 24px auto 0; overflow: hidden; }
+    .progress span { display: block; height: 100%; background: var(--accent); animation: progress 2.5s ease-out forwards; transform-origin: right; }
+    @keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
   </style>
 </head>
 <body>
-  <div id="terminal">TERMINAL-AI Shell v2.0 (Intelligent Linux Kernel)
-Type code or shell commands...
-</div>
-  <div class="input-line">
-    <span class="prompt">root@tg-agent:~#</span>
-    <input type="text" id="cmd" autofocus />
+  <div class="splash" id="splash" aria-hidden="true"><div><div class="mark">✳</div><h2>به دستیار هوشمند خوش آمدید</h2><p>در حال آماده‌سازی گفت‌وگو...</p><div class="progress"><span></span></div></div></div>
+  <div class="app">
+    <header><div class="header-inner"><span class="mark" aria-hidden="true">✳</span><div class="brand">دستیار هوشمند<small>همراه شما برای فکر کردن و ساختن</small></div></div></header>
+    <main id="scroll"><div class="conversation" id="messages" aria-live="polite"><div class="welcome" id="welcome"><div class="mark" aria-hidden="true">✳</div><h1>امروز چه کمکی از من برمی‌آید؟</h1><p>هر سؤالی دارید بپرسید، یا با هم چیزی بسازیم.</p></div></div></main>
+    <footer><form class="composer" id="form"><textarea id="input" rows="1" placeholder="پیام خود را بنویسید..." aria-label="پیام شما"></textarea><div class="composer-actions"><button class="send" id="send" type="submit" aria-label="ارسال پیام">↑</button></div></form><p class="footnote">پاسخ‌ها ممکن است نادرست باشند؛ اطلاعات مهم را بررسی کنید.</p></footer>
   </div>
-
   <script>
-    const input = document.getElementById('cmd');
-    const terminal = document.getElementById('terminal');
+    const tg = window.Telegram && window.Telegram.WebApp;
+    const messages = document.getElementById('messages');
+    const input = document.getElementById('input');
+    const send = document.getElementById('send');
+    const scroll = document.getElementById('scroll');
+    let busy = false;
 
-    input.addEventListener('keydown', async (e) => {
-      if (e.key === 'Enter') {
-        const val = input.value.trim();
-        if (!val) return;
-        terminal.innerText += `\nroot@tg-agent:~# ${val}\n`;
-        input.value = '';
+    function setViewport() {
+      const height = tg && tg.viewportHeight || (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+      document.documentElement.style.setProperty('--height', height + 'px');
+    }
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      tg.onEvent?.('viewportChanged', setViewport);
+      tg.onEvent?.('safeAreaChanged', setViewport);
+      tg.onEvent?.('contentSafeAreaChanged', setViewport);
+    }
+    window.visualViewport?.addEventListener('resize', setViewport);
+    window.addEventListener('resize', setViewport);
+    setViewport();
+    setTimeout(() => {
+      const splash = document.getElementById('splash');
+      splash.classList.add('is-leaving');
+      setTimeout(() => splash.remove(), 400);
+    }, 2500);
 
-        const isCode = val.startsWith('python3 ') || val.startsWith('node ') || val.includes('print(') || val.includes('console.log(');
-        const actionType = isCode ? 'execute' : 'chat';
-
-        try {
-          const res = await fetch('/api/agent', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: val, action: actionType })
-          });
-          const data = await res.json();
-          terminal.innerText += (data.response || data.error || 'No output') + '\n';
-        } catch(err) {
-          terminal.innerText += `Error: ${err.message}\n`;
-        }
-        window.scrollTo(0, document.body.scrollHeight);
+    function callAgent(payload) {
+      return new Promise((resolve, reject) => {
+        if (!tg?.Serverless?.call) return reject(new Error('این برنامه را در تلگرام باز کنید تا به دستیار متصل شوید.'));
+        tg.Serverless.call('agent', payload, (err, result) => err ? reject(err) : resolve(result));
+      });
+    }
+    function bottom() { scroll.scrollTop = scroll.scrollHeight; }
+    function addMessage(role, text) {
+      document.getElementById('welcome')?.remove();
+      const entry = document.createElement('article');
+      entry.className = 'message ' + role;
+      if (role === 'assistant') {
+        const label = document.createElement('div');
+        label.className = 'assistant-label'; label.textContent = '✳  دستیار'; entry.appendChild(label);
       }
+      const body = document.createElement('div'); body.className = 'body';
+      if (role === 'user') body.textContent = text;
+      else renderText(body, text);
+      entry.appendChild(body); messages.appendChild(entry); bottom();
+      return entry;
+    }
+    function renderText(container, text) {
+      const parts = String(text).split(/```([^\n`]*)\n?([\s\S]*?)```/g);
+      for (let i = 0; i < parts.length; i += 3) {
+        if (parts[i]) { const p = document.createElement('p'); p.textContent = parts[i]; p.dir = 'auto'; container.appendChild(p); }
+        if (i + 2 < parts.length) {
+          const block = document.createElement('div'); block.className = 'code-block';
+          const head = document.createElement('div'); head.className = 'code-head';
+          const lang = document.createElement('span'); lang.textContent = parts[i + 1] || 'code';
+          const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'copy'; copy.textContent = 'کپی';
+          const codeText = parts[i + 2].replace(/\n$/, '');
+          copy.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(codeText); copy.textContent = 'کپی شد'; }
+            catch (_) { copy.textContent = 'کپی ناموفق بود'; }
+            setTimeout(() => { copy.textContent = 'کپی'; }, 2000);
+          });
+          head.append(lang, copy); const pre = document.createElement('pre'); const code = document.createElement('code'); code.textContent = codeText; pre.appendChild(code); block.append(head, pre); container.appendChild(block);
+        }
+      }
+    }
+    function toolCard() {
+      const card = document.createElement('details'); card.className = 'tool';
+      const summary = document.createElement('summary');
+      const icon = document.createElement('span'); icon.textContent = '🛠️';
+      const label = document.createElement('span'); label.className = 'tool-label'; label.textContent = 'اجرای کد';
+      const status = document.createElement('span'); status.className = 'spinner'; status.setAttribute('aria-label', 'در حال اجرا');
+      const result = document.createElement('div'); result.className = 'tool-result'; result.textContent = 'در حال اجرا...';
+      summary.append(icon, label, status); card.append(summary, result); messages.appendChild(card); bottom();
+      return { status, result };
+    }
+    function resizeInput() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 150) + 'px'; }
+    input.addEventListener('input', resizeInput);
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); document.getElementById('form').requestSubmit(); }
+    });
+    document.getElementById('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const prompt = input.value.trim();
+      if (!prompt || busy) return;
+      busy = true; send.disabled = true; input.value = ''; resizeInput(); addMessage('user', prompt);
+      const isCode = prompt.startsWith('python3 ') || prompt.startsWith('node ') || prompt.includes('print(') || prompt.includes('console.log(');
+      const action = isCode ? 'execute' : 'chat';
+      const tool = isCode ? toolCard() : null;
+      const thinking = document.createElement('div'); thinking.className = 'thinking'; thinking.setAttribute('role', 'status');
+      thinking.innerHTML = '<span>دستیار در حال فکر کردن است</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+      messages.appendChild(thinking); bottom();
+      try {
+        const data = await callAgent({ prompt, action });
+        if (data?.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message || 'خطای ناشناخته');
+        const output = data?.response ?? data?.output ?? 'پاسخی دریافت نشد.';
+        const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+        if (tool) { tool.status.className = 'status'; tool.status.textContent = '✓'; tool.status.setAttribute('aria-label', 'انجام شد'); tool.result.textContent = text; }
+        thinking.remove(); addMessage('assistant', text);
+      } catch (err) {
+        if (tool) { tool.status.className = 'status error'; tool.status.textContent = '×'; tool.status.setAttribute('aria-label', 'ناموفق'); tool.result.textContent = err?.message || 'خطای ناشناخته'; }
+        thinking.remove(); addMessage('assistant', 'خطا: ' + (err?.message || 'ارتباط با دستیار برقرار نشد.'));
+      } finally { busy = false; send.disabled = false; bottom(); }
     });
   </script>
 </body>
