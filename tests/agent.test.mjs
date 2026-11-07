@@ -29,6 +29,7 @@ import { findJsonObjects, stripTelegramMarkdown, byteLength, truncate } from '..
 import { resolveRepo } from '../tgcloud/lib/github.js';
 import agentEndpoint from '../tgcloud/endpoints/agent.js';
 import getHistory from '../tgcloud/endpoints/getHistory.js';
+import getStatus from '../tgcloud/endpoints/getStatus.js';
 import approveEndpoint from '../tgcloud/endpoints/approve.js';
 import clearHistoryEndpoint from '../tgcloud/endpoints/clearHistory.js';
 import messageHandler from '../tgcloud/handlers/message.js';
@@ -1253,4 +1254,80 @@ test('a Kimi key never reaches an error message or the Mini App payload', async 
       }
     }
   );
+});
+
+// ── Mini App dashboard payloads ─────────────────────────────────────────────
+
+test('getStatus feeds the dashboard: activity counters, capabilities and limits', async () => {
+  __resetDatabase();
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: '', moonshotApiKey: '', aiFallbackOrder: ['gemini'] },
+    async () => {
+      const chat = await ensureChat({ userId: USER.id });
+      await addMessage({ userId: USER.id, chatRef: chat.id, role: 'user', content: 'سلام' });
+      // One recorded action of each outcome, written the way runAgent does it.
+      const { db } = await import('sdk');
+      const { agentActions } = await import('../tgcloud/schema.js');
+      await db.insert(agentActions).values({ userId: USER.id, service: 'github', action: 'read_file', target: 'acme/site › README.md', status: 'ok' }).run();
+      await db.insert(agentActions).values({ userId: USER.id, service: 'gdrive', action: 'trash_file', target: 'old.pdf', status: 'error' }).run();
+
+      const status = await getStatus({}, ctxFor());
+      assert.equal(status.activity.total, 2);
+      assert.equal(status.activity.ok, 1);
+      assert.equal(status.activity.failed, 1);
+      assert.equal(status.activity.last24h, 2, 'fresh rows fall inside the 24h window');
+      assert.deepEqual(status.activity.services, { github: 1, gdrive: 1 });
+      assert.equal(status.activity.latest.length, 2);
+      assert.equal(status.activity.latest[0].ok, false, 'newest first');
+      assert.equal(status.activity.latest[0].action, 'trash_file');
+
+      assert.equal(status.capabilities.count > 0, true);
+      assert.equal(status.capabilities.writeCount > 0, true);
+      assert.ok(Array.isArray(status.capabilities.actions.github));
+      assert.equal(typeof status.capabilities.github, 'boolean');
+      assert.equal(status.limits.maxActionsPerTurn, settings.maxActionsPerTurn);
+      assert.equal(status.limits.maxPromptLength, 8000);
+    }
+  );
+});
+
+test('the agent endpoint reports elapsed time, fallback and a per-provider trace', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: '', aiFallbackOrder: ['gemini', 'grok'] }, async () => {
+    __setFetchMock(async (url) => {
+      if (String(url).includes('generativelanguage')) return jsonResponse({ candidates: [{ content: { parts: [{ text: 'سلام!' }] }, finishReason: 'STOP' }] });
+      return jsonResponse({ error: { message: 'down' } }, 503);
+    });
+    try {
+      const result = await agentEndpoint({ prompt: 'سلام' }, ctxFor());
+      assert.equal(typeof result.elapsedMs, 'number');
+      assert.ok(result.elapsedMs >= 0);
+      assert.equal(result.fallback, false);
+      assert.deepEqual(result.trace.map((t) => [t.provider, t.ok]), [['gemini', true]]);
+      // The Mini App's latency chip reads this straight off the provider summary.
+      assert.equal(result.providers.find((p) => p.name === 'gemini').status, 'active');
+      assert.equal(typeof result.providers.find((p) => p.name === 'gemini').ms, 'number');
+    } finally {
+      __setFetchMock(null);
+    }
+  });
+});
+
+test('pending approvals expose the target, params and an expiry for the countdown', async () => {
+  __resetDatabase();
+  const created = await createApproval({
+    userId: USER.id,
+    action: { service: 'github', action: 'delete_file', params: { repo: 'acme/site', path: 'old.js' } },
+    reason: 'پاک‌سازی',
+  });
+  assert.ok(created.expiresAt, 'created cards have an expiry');
+  assert.equal(created.target, 'old.js');
+  assert.equal(created.params.path, 'old.js');
+
+  const pending = await pendingApprovals({ userId: USER.id });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].target, 'old.js');
+  assert.equal(pending[0].service, 'github');
+  assert.ok(pending[0].expiresAt && new Date(pending[0].expiresAt) > new Date(), 'fresh approvals are still valid');
+  assert.equal(pending[0].createdAt === undefined, false, 'the card can show when it was asked');
 });
