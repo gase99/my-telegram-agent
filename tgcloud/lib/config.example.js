@@ -48,7 +48,9 @@ export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 // K2.6+ and K3 are reasoning models and think by default; the adapter asks for
 // "instant mode" (`thinking: { type: 'disabled' }`) so the hop fits
 // AI_TIMEOUT_MS. `kimi-k2.6` is the general model, `kimi-k2.7-code` the coding
-// specialist, `kimi-k3` the flagship. `MOONSHOT_API_KEY` is an accepted alias.
+// specialist, `kimi-k3` the flagship. An older local config may use
+// `KIMI_API_KEY`, `MOONSHOT_MODEL` and `MOONSHOT_BASE_URL` as aliases; an empty
+// primary value never masks those aliases.
 export const MOONSHOT_API_KEY = '';
 export const KIMI_MODEL = 'kimi-k2.6';
 export const KIMI_BASE_URL = 'https://api.moonshot.ai/v1';

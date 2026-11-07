@@ -26,7 +26,7 @@ executable code; the SDK reference is in [docs/tgcloud-sdk.md](docs/tgcloud-sdk.
 ## Configuration and secrets
 
 - `tgcloud/lib/config.js` is intentionally gitignored and deployed with the code. `tgcloud/lib/config.example.js` is the committed template — keep the two in sync when adding a key. `npm test` copies the template to `config.js` when the file is missing, so a fresh clone runs offline.
-- AI keys: `GEMINI_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY` (alias `KIMI_API_KEY`). Any subset may be set; providers without a key are skipped (never counted as failures). `AI_FALLBACK_ORDER` decides the order and accepts `xai` / `moonshot` as aliases for `grok` / `kimi`. Each has its own `*_MODEL` and `*_BASE_URL`, so a model rename never needs a code change.
+- AI keys: `GEMINI_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY` (alias `KIMI_API_KEY`). Empty primary values must not mask populated aliases (use string `||`, not `??`). Any subset may be set; providers without a key are skipped (never counted as failures). `AI_FALLBACK_ORDER` decides the order and accepts `xai` / `moonshot` as aliases for `grok` / `kimi`. Each has its own `*_MODEL` and `*_BASE_URL`, so a model rename never needs a code change.
 - Every module reads configuration through `lib/settings.js`, never from `config.js` directly. That layer supplies defaults for keys a stale local config may lack.
 - Never print, log, commit, or expose a key. `lib/security.js#redactSecrets` masks configured values and known token shapes; call it on any provider error before it reaches a response, a Telegram message, or a log line.
 - `ALLOWED_USER_IDS` is the only authorization gate. An endpoint must check it *and* derive the user from `ctx.initData.user`, never from client input.
@@ -36,7 +36,8 @@ executable code; the SDK reference is in [docs/tgcloud-sdk.md](docs/tgcloud-sdk.
 - The page is a single `miniapp/index.html` with no build step. It must not reference `localhost` or any backend URL: endpoints are called by name through `Telegram.WebApp.Serverless.call`.
 - Everything rendered from model output goes through `escapeHtml`/`renderMarkdown`; never inject raw text into `innerHTML`.
 - Keep `direction: ltr; unicode-bidi: isolate` on code, ids, timestamps, and prompt symbols — the page is RTL and mixed content reorders otherwise.
-- Layout must follow `tg.viewportHeight` (live, not stable) so the composer stays above the keyboard, and use `env(safe-area-inset-*)` for notches.
+- Layout must follow `tg.viewportHeight` (live, not stable) plus `visualViewport`/`100dvh` outside Telegram so the composer stays above the keyboard, and use `env(safe-area-inset-*)` together with Telegram content insets for notches/chrome.
+- The `#splash` overlay is dismissed by an independent 3-second timer; do not make its removal await history, status or any network request. It must remain removable when `prefers-reduced-motion` suppresses `transitionend`.
 
 ## Setup and commands
 

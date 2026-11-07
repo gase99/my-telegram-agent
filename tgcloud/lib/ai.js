@@ -9,6 +9,7 @@
 //   runAgent({ userId, prompt })   → { reply, actions, pending, usage, model,
 //                                      provider, attempts }
 //   providerCatalog()              → [{ name, label, model, configured }]
+//   chainFor(order)                → explicit order + omitted keyed providers
 //   summariseAttempts(attempts, usedProvider)
 //                                  → per-provider status for the Mini App badges
 //   parseActions(text)             → [{ service, action, params, reason }]
@@ -157,8 +158,9 @@ export function toGeminiRequest(messages, systemPrompt = '', options = {}) {
 }
 
 /**
- * OpenAI-compatible adapter (Grok, DeepSeek): a flat `messages` array with a
- * leading `system` entry, `max_tokens`, and `Authorization: Bearer <key>`.
+ * OpenAI-compatible adapter (Grok, DeepSeek and Kimi): a flat `messages`
+ * array with a leading `system` entry, `max_tokens`, and
+ * `Authorization: Bearer <key>`.
  * @returns {{ url:string, headers:object, body:object }}
  */
 export function toOpenAIRequest(messages, systemPrompt = '', options = {}) {
@@ -391,7 +393,7 @@ export function fallbackOrder(order = settings.aiFallbackOrder) {
  * MOONSHOT_API_KEY into an old config would silently never be tried. An
  * explicit position still wins, so a hand-written order is never overturned.
  */
-function chainFor(order) {
+export function chainFor(order = settings.aiFallbackOrder) {
   const explicit = fallbackOrder(order);
   const rest = AI_PROVIDERS.filter((name) => !explicit.includes(name) && Boolean(providerKey(name)));
   return [...explicit, ...rest];

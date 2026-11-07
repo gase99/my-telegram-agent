@@ -25,8 +25,18 @@
     --violet: #b98cff;
     --font: "SFMono-Regular", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, monospace;
     --radius: 14px;
-    --safe-top: env(safe-area-inset-top, 0px);
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    /* env() covers the device notch; Telegram's content insets also cover its
+       own top/bottom chrome, so the status badges never slide underneath it. */
+    --safe-top: max(
+      env(safe-area-inset-top, 0px),
+      var(--tg-safe-area-inset-top, 0px),
+      var(--tg-content-safe-area-inset-top, 0px)
+    );
+    --safe-bottom: max(
+      env(safe-area-inset-bottom, 0px),
+      var(--tg-safe-area-inset-bottom, 0px),
+      var(--tg-content-safe-area-inset-bottom, 0px)
+    );
     --header-h: 52px;
     --composer-h: 64px;
   }
@@ -269,6 +279,9 @@
   .entry-body strong { color: #9dffcb; font-weight: 700; }
   .entry-body em { color: var(--amber); font-style: normal; text-decoration: underline dotted; }
   .entry-body .inline-code {
+    direction: ltr;
+    text-align: left;
+    unicode-bidi: isolate;
     background: rgba(53, 214, 255, .1);
     color: var(--cyan);
     border: 1px solid rgba(53, 214, 255, .18);
@@ -304,7 +317,13 @@
     border-right: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
   }
-  pre.code code { color: #c8f7e0; }
+  pre.code code {
+    display: block;
+    direction: ltr;
+    text-align: left;
+    unicode-bidi: isolate;
+    color: #c8f7e0;
+  }
   pre.code .copy {
     position: absolute;
     top: 5px; right: 6px;
@@ -576,6 +595,172 @@
   }
   .empty b { color: var(--green); font-weight: 600; }
 
+  /* ── three-second splash / AI core boot ────────────────────────────────── */
+  .splash {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: calc(24px + var(--safe-top)) 20px calc(24px + var(--safe-bottom));
+    overflow: hidden;
+    background: #0d1117;
+    color: #e6edf3;
+    text-align: center;
+    opacity: 1;
+    visibility: visible;
+    transition: opacity .6s ease, visibility 0s linear .6s;
+  }
+  .splash::before,
+  .splash::after {
+    content: "";
+    position: absolute;
+    width: 70vmax;
+    height: 70vmax;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .splash::before {
+    top: -42vmax;
+    right: -25vmax;
+    background: radial-gradient(circle, rgba(121, 90, 248, .16), transparent 66%);
+  }
+  .splash::after {
+    bottom: -46vmax;
+    left: -28vmax;
+    background: radial-gradient(circle, rgba(57, 255, 154, .1), transparent 66%);
+  }
+  .splash.is-leaving {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .splash-content {
+    position: relative;
+    z-index: 1;
+    width: min(100%, 460px);
+    transition: transform .6s ease;
+  }
+  .splash.is-leaving .splash-content { transform: scale(.98); }
+  .splash-ai-icon {
+    position: relative;
+    width: 116px;
+    height: 116px;
+    display: grid;
+    place-items: center;
+    margin: 0 auto 22px;
+    color: #bca8ff;
+    animation: splashIconFloat 2.4s ease-in-out infinite;
+  }
+  .splash-ai-icon::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(151, 117, 255, .22), rgba(53, 214, 255, .05) 48%, transparent 72%);
+    filter: blur(3px);
+    animation: splashHalo 1.8s ease-in-out infinite;
+  }
+  .splash-ai-icon::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgba(53, 214, 255, .24);
+    border-top-color: rgba(188, 168, 255, .85);
+    border-bottom-color: rgba(57, 255, 154, .5);
+    border-radius: 50%;
+    animation: splashOrbit 5s linear infinite;
+  }
+  .splash-star {
+    width: 76px;
+    height: 76px;
+    overflow: visible;
+    filter: drop-shadow(0 0 10px rgba(188, 168, 255, .9)) drop-shadow(0 0 28px rgba(53, 214, 255, .35));
+    animation: splashStarPulse 1.8s ease-in-out infinite;
+  }
+  .splash-kicker {
+    margin-bottom: 9px;
+    color: #8b9cad;
+    font-size: 10px;
+    letter-spacing: .22em;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  .splash-title {
+    margin: 0;
+    color: #f0f6fc;
+    font-size: clamp(16px, 4.4vw, 21px);
+    font-weight: 700;
+    line-height: 1.9;
+  }
+  .splash-subtitle {
+    margin: 7px 0 24px;
+    color: #8b9cad;
+    font-size: 12px;
+  }
+  .splash-models {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px 8px;
+    min-height: 24px;
+    margin: 0 auto 26px;
+    color: #c9d1d9;
+    font-size: 11px;
+    line-height: 1.8;
+    direction: ltr;
+    text-align: left;
+    unicode-bidi: isolate;
+  }
+  .splash-model {
+    opacity: .42;
+    animation: splashModel 2.4s ease-in-out infinite;
+    animation-delay: calc(var(--i) * 140ms);
+  }
+  .splash-separator { color: #465565; opacity: .7; }
+  .splash-progress {
+    width: min(280px, 72vw);
+    height: 4px;
+    margin: 0 auto;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #212a35;
+    direction: ltr;
+  }
+  .splash-progress-fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #795af8, #35d6ff 52%, #39ff9a);
+    box-shadow: 0 0 14px rgba(53, 214, 255, .55);
+    animation: splashProgress 3s cubic-bezier(.2, .65, .3, 1) forwards;
+  }
+  @keyframes splashIconFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-7px); }
+  }
+  @keyframes splashOrbit { to { transform: rotate(360deg); } }
+  @keyframes splashHalo {
+    0%, 100% { opacity: .6; transform: scale(.9); }
+    50% { opacity: 1; transform: scale(1.12); }
+  }
+  @keyframes splashStarPulse {
+    0%, 100% { transform: scale(.9) rotate(-4deg); opacity: .8; }
+    50% { transform: scale(1.08) rotate(4deg); opacity: 1; }
+  }
+  @keyframes splashModel {
+    0%, 100% { opacity: .42; transform: translateY(1px); }
+    45%, 60% { opacity: 1; transform: translateY(0); color: #f0f6fc; }
+  }
+  @keyframes splashProgress {
+    0% { width: 0; }
+    18% { width: 16%; }
+    62% { width: 68%; }
+    100% { width: 100%; }
+  }
+
   /* wide screens: centre the terminal */
   @media (min-width: 720px) {
     body { max-width: 760px; margin: 0 auto; border-inline: 1px solid var(--line); }
@@ -584,10 +769,44 @@
 
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
+    .splash-model { opacity: 1; }
+    .splash-progress-fill { width: 100%; }
   }
 </style>
+<noscript><style>.splash { display: none !important; }</style></noscript>
 </head>
 <body>
+  <div class="splash" id="splash" role="status" aria-label="در حال راه‌اندازی دستیار برنامه‌نویسی">
+    <div class="splash-content">
+      <div class="splash-ai-icon" aria-hidden="true">
+        <svg class="splash-star" viewBox="0 0 120 120" focusable="false">
+          <defs>
+            <linearGradient id="splash-star-gradient" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#d8ccff"></stop>
+              <stop offset=".48" stop-color="#9b8cff"></stop>
+              <stop offset="1" stop-color="#35d6ff"></stop>
+            </linearGradient>
+          </defs>
+          <path fill="url(#splash-star-gradient)" d="M60 2C65 35 85 55 118 60C85 65 65 85 60 118C55 85 35 65 2 60C35 55 55 35 60 2Z"></path>
+        </svg>
+      </div>
+      <div class="splash-kicker">TERMINAL-AI · NEURAL CORE</div>
+      <h1 class="splash-title">به دستیار برنامه‌نویسی هوشمند خوش آمدید 👋</h1>
+      <p class="splash-subtitle">در حال راه‌اندازی هسته هوش مصنوعی...</p>
+      <div class="splash-models" aria-label="Gemini, ChatGPT, Claude, DeepSeek, Grok, Kimi">
+        <span class="splash-model" style="--i:0">Gemini</span><span class="splash-separator" aria-hidden="true">•</span>
+        <span class="splash-model" style="--i:1">ChatGPT</span><span class="splash-separator" aria-hidden="true">•</span>
+        <span class="splash-model" style="--i:2">Claude</span><span class="splash-separator" aria-hidden="true">•</span>
+        <span class="splash-model" style="--i:3">DeepSeek</span><span class="splash-separator" aria-hidden="true">•</span>
+        <span class="splash-model" style="--i:4">Grok</span><span class="splash-separator" aria-hidden="true">•</span>
+        <span class="splash-model" style="--i:5">Kimi</span>
+      </div>
+      <div class="splash-progress" role="progressbar" aria-label="پیشرفت راه‌اندازی">
+        <div class="splash-progress-fill"></div>
+      </div>
+    </div>
+  </div>
+
   <header>
     <button class="icon-btn" id="menu-btn" aria-label="منو">☰</button>
     <div class="brand">
@@ -668,6 +887,28 @@
 <script>
 (() => {
   'use strict';
+
+  // ── splash lifecycle ─────────────────────────────────────────────────────
+  // This timer is deliberately independent from history/status requests: a
+  // slow or failed backend must never leave a permanent overlay over the app.
+  const splash = document.getElementById('splash');
+  let splashRemoveTimer = null;
+  const removeSplash = () => {
+    if (!splash) return;
+    clearTimeout(splashRemoveTimer);
+    splash.remove();
+  };
+  const dismissSplash = () => {
+    if (!splash || !splash.isConnected || splash.classList.contains('is-leaving')) return;
+    splash.classList.add('is-leaving');
+    splash.setAttribute('aria-hidden', 'true');
+    splash.addEventListener('transitionend', (event) => {
+      if (event.target === splash && event.propertyName === 'opacity') removeSplash();
+    });
+    // Reduced-motion clients may not emit transitionend; removal is guaranteed.
+    splashRemoveTimer = setTimeout(removeSplash, 700);
+  };
+  if (splash) setTimeout(dismissSplash, 3000);
 
   // ── environment ───────────────────────────────────────────────────────────
   const tg = window.Telegram?.WebApp;
@@ -1436,6 +1677,29 @@
   });
 
   // ── Telegram lifecycle ────────────────────────────────────────────────────
+  // Follow the live viewport in Telegram and in a regular mobile browser.
+  // `visualViewport` is important where 100dvh alone does not shrink for an
+  // on-screen keyboard; taking the smallest reported height keeps the composer
+  // visible even if one API briefly reports a stale value.
+  function syncViewport() {
+    const windowHeight = window.innerHeight || 0;
+    const visualHeight = window.visualViewport?.height || 0;
+    const telegramHeight = tg?.viewportHeight || tg?.viewportStableHeight || 0;
+    const candidates = [telegramHeight, visualHeight, windowHeight].filter((value) => value > 0);
+    if (!candidates.length) return;
+    const height = Math.min(...candidates);
+    document.documentElement.style.setProperty('--tg-viewport-height', `${height}px`);
+    document.body.style.height = `${height}px`;
+    scrollToEnd();
+  }
+
+  function initViewport() {
+    syncViewport();
+    tg?.onEvent?.('viewportChanged', syncViewport);
+    window.addEventListener('resize', syncViewport, { passive: true });
+    window.visualViewport?.addEventListener('resize', syncViewport, { passive: true });
+  }
+
   function initTelegram() {
     if (!tg) return;
     try {
@@ -1448,26 +1712,9 @@
       tg.requestFullscreen?.();
     } catch { /* older clients */ }
 
-    // The viewport shrinks when the keyboard opens. Follow the *live* height
-    // (`viewportHeight`, not the stable one) so the composer rides above the
-    // keyboard instead of hiding behind it.
-    const syncViewport = () => {
-      const winHeight = window.innerHeight || 0;
-      const reported = tg.viewportHeight || tg.viewportStableHeight || 0;
-      // Use the smaller of the two: a stale/oversized report would otherwise
-      // push the composer below the fold.
-      const candidates = [reported, winHeight].filter((value) => value > 0);
-      if (!candidates.length) return;
-      const height = Math.min(...candidates);
-      document.documentElement.style.setProperty('--tg-viewport-height', `${height}px`);
-      document.body.style.height = `${height}px`;
-      scrollToEnd();
-    };
-    tg.onEvent?.('viewportChanged', syncViewport);
     tg.onEvent?.('themeChanged', () => {
       document.body.style.background = '#05080a';
     });
-    syncViewport();
 
     const user = tg.initDataUnsafe?.user;
     if (user) {
@@ -1490,6 +1737,7 @@
   }
 
   async function boot() {
+    initViewport();
     initTelegram();
     autoGrow();
     setComposerState();
@@ -1499,7 +1747,11 @@
     el.input.focus?.();
   }
 
-  boot();
+  boot().catch((err) => {
+    el.connDot.className = 'dot off';
+    el.connText.textContent = 'خطا در راه‌اندازی';
+    appendError(`❌ راه‌اندازی مینی‌اپ ناموفق بود: ${err?.message || String(err)}`);
+  });
 })();
 </script>
 </body>

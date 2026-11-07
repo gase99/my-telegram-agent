@@ -125,9 +125,11 @@ export const settings = {
   // Moonshot's current OpenAI-compatible host is api.moonshot.ai; the older
   // api.moonshot.cn host only serves mainland-China accounts. K2.6+ and K3
   // think by default, so the adapter asks for instant mode.
-  moonshotApiKey: str(config.MOONSHOT_API_KEY ?? config.KIMI_API_KEY),
-  kimiModel: str(config.KIMI_MODEL ?? config.MOONSHOT_MODEL) || 'kimi-k2.6',
-  kimiBaseUrl: url(config.KIMI_BASE_URL ?? config.MOONSHOT_BASE_URL, 'https://api.moonshot.ai/v1'),
+  // Use `||`, not `??`: a template normally contains an empty primary value,
+  // and that empty string must not mask a populated compatibility alias.
+  moonshotApiKey: str(config.MOONSHOT_API_KEY) || str(config.KIMI_API_KEY),
+  kimiModel: str(config.KIMI_MODEL) || str(config.MOONSHOT_MODEL) || 'kimi-k2.6',
+  kimiBaseUrl: url(str(config.KIMI_BASE_URL) || str(config.MOONSHOT_BASE_URL), 'https://api.moonshot.ai/v1'),
 
   // ── AI: failover ─────────────────────────────────────────────────────────
   // Tried left to right; providers without a key are skipped.
@@ -237,9 +239,17 @@ function defaultModel(name) {
   }
 }
 
-/** Provider names that have a key, in failover order. */
+/**
+ * Provider names that have a key, in failover order.
+ *
+ * Keep the same upgrade contract as ai.js#chainFor(): a keyed provider omitted
+ * by an older AI_FALLBACK_ORDER is appended rather than silently ignored.
+ * This helper lives here (rather than importing ai.js) to avoid a cycle.
+ */
 export function configuredProviders() {
-  return settings.aiFallbackOrder.filter((name) => Boolean(providerKey(name)));
+  const explicit = settings.aiFallbackOrder.filter((name) => Boolean(providerKey(name)));
+  const appended = AI_PROVIDERS.filter((name) => !explicit.includes(name) && Boolean(providerKey(name)));
+  return [...explicit, ...appended];
 }
 
 /** Which integrations have credentials configured (values never returned). */
