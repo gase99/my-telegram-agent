@@ -8,7 +8,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { __resetDatabase, __setFetchMock, sentMessages } from 'sdk';
-import { parseActions, stripActionBlocks, toTurns, runAgent } from '../tgcloud/lib/ai.js';
+import {
+  parseActions,
+  stripActionBlocks,
+  toTurns,
+  runAgent,
+  generateWithFallback,
+  summariseAttempts,
+  providerCatalog,
+  toGeminiRequest,
+  toOpenAIRequest,
+} from '../tgcloud/lib/ai.js';
 import { isKnownAction, runAction, describeAction } from '../tgcloud/lib/actions.js';
 import { redactSecrets, isUserAllowed, integrationStatus } from '../tgcloud/lib/security.js';
 import { ensureChat, addMessage, recentMessages, historyPage, clearHistory } from '../tgcloud/lib/store.js';
@@ -316,7 +326,7 @@ test('agent endpoint rejects anonymous and empty requests', async () => {
 
 test('agent endpoint reports a missing API key instead of crashing', async () => {
   __resetDatabase();
-  if (settings.geminiApiKey) return; // a real key is configured in this checkout
+  if (settings.geminiApiKey || settings.xaiApiKey || settings.deepseekApiKey) return; // a real key is configured in this checkout
   await assert.rejects(() => agentEndpoint({ prompt: 'سلام' }, ctxFor()), (err) => {
     assert.equal(err.code, 'AI_NOT_CONFIGURED');
     return true;
@@ -488,4 +498,268 @@ test('provider errors are translated, not leaked', async () => {
     settings.githubToken = originalToken;
     __setFetchMock(null);
   }
+});
+
+
+// ── provider failover ───────────────────────────────────────────────────────
+
+/** Run `fn` with temporary AI settings; always restores the checkout's values. */
+async function withAi(overrides, fn) {
+  const saved = {
+    geminiApiKey: settings.geminiApiKey,
+    xaiApiKey: settings.xaiApiKey,
+    deepseekApiKey: settings.deepseekApiKey,
+    aiFallbackOrder: settings.aiFallbackOrder,
+    aiTimeoutMs: settings.aiTimeoutMs,
+  };
+  Object.assign(settings, overrides);
+  try {
+    return await fn();
+  } finally {
+    Object.assign(settings, saved);
+  }
+}
+
+const jsonResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+test('failover: a 429 from Gemini is answered by Grok', async () => {
+  await withAi(
+    { geminiApiKey: 'gemini-key', xaiApiKey: 'xai-key', deepseekApiKey: '', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      const calls = [];
+      __setFetchMock(async (url, init = {}) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body || '{}'), headers: init.headers || {} });
+        if (String(url).includes('generativelanguage')) {
+          return jsonResponse({ error: { code: 429, message: 'Quota exceeded' } }, 429);
+        }
+        return jsonResponse({
+          model: 'grok-test',
+          choices: [{ message: { role: 'assistant', content: 'سلام از Grok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 },
+        });
+      });
+
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'سلام' }], 'SYS');
+        assert.equal(result.provider, 'grok');
+        assert.equal(result.providerLabel, 'Grok');
+        assert.equal(result.text, 'سلام از Grok');
+        assert.equal(result.usage.totalTokenCount, 8, 'OpenAI usage is normalised for the UI');
+        assert.deepEqual(result.attempts.map((a) => [a.provider, a.kind]), [
+          ['gemini', 'rate_limit'],
+          ['grok', 'ok'],
+        ]);
+
+        // The OpenAI-compatible request shape: Bearer auth, system first.
+        const grok = calls.find((call) => call.url.includes('api.x.ai'));
+        assert.equal(grok.url, 'https://api.x.ai/v1/chat/completions');
+        assert.equal(grok.headers.Authorization, 'Bearer xai-key');
+        assert.equal(grok.body.messages[0].role, 'system');
+        assert.equal(grok.body.messages[0].content, 'SYS');
+        assert.equal(grok.body.model, settings.xaiModel);
+        // Keys never travel in a URL.
+        assert.ok(!calls.some((call) => call.url.includes('xai-key') || call.url.includes('gemini-key')));
+        // Gemini is called with a header, not a query string.
+        const gemini = calls.find((call) => call.url.includes('generativelanguage'));
+        assert.equal(gemini.headers['x-goog-api-key'], 'gemini-key');
+        assert.match(gemini.url, /:generateContent$/);
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('failover: a 403 and a 5xx both fall through to the next provider', async () => {
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) return jsonResponse({ error: { message: 'quota' } }, 403);
+        if (String(url).includes('api.x.ai')) return jsonResponse({ error: { message: 'down' } }, 503);
+        return jsonResponse({ choices: [{ message: { content: 'پاسخ از DeepSeek' }, finish_reason: 'stop' }], model: 'deepseek-chat' });
+      });
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(result.provider, 'deepseek');
+        assert.deepEqual(result.attempts.map((a) => a.kind), ['forbidden', 'server', 'ok']);
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('prompt adapters build the documented request shapes', () => {
+  const messages = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'hi' },
+    { role: 'user', content: 'again' },
+    { role: 'assistant', content: 'ok' },
+  ];
+
+  const gemini = toGeminiRequest(messages, 'SYS', { model: 'gemini-3.5-flash', apiKey: 'k' });
+  assert.match(gemini.url, /\/models\/gemini-3\.5-flash:generateContent$/);
+  assert.equal(gemini.headers['x-goog-api-key'], 'k');
+  assert.deepEqual(gemini.body.contents.map((c) => c.role), ['user', 'model']);
+  assert.deepEqual(gemini.body.contents[0].parts, [{ text: 'hi\n\nagain' }]);
+  assert.equal(gemini.body.systemInstruction.parts[0].text, 'SYS\n\nsys');
+  assert.equal(gemini.body.generationConfig.thinkingConfig.thinkingBudget, 0);
+
+  const openai = toOpenAIRequest(messages, 'SYS', {
+    model: 'deepseek-chat',
+    apiKey: 'd',
+    baseUrl: 'https://api.deepseek.com',
+  });
+  assert.equal(openai.url, 'https://api.deepseek.com/chat/completions');
+  assert.equal(openai.headers.Authorization, 'Bearer d');
+  assert.deepEqual(openai.body.messages.map((m) => m.role), ['system', 'user', 'assistant']);
+  assert.equal(openai.body.messages[0].content, 'SYS\n\nsys');
+  assert.equal(openai.body.max_tokens, settings.aiMaxOutputTokens);
+  assert.equal(openai.body.stream, false);
+});
+
+test('all providers failing produces one comprehensive, redacted error', async () => {
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) return jsonResponse({ error: { message: 'boom' } }, 500);
+        if (String(url).includes('api.x.ai')) {
+          return jsonResponse({ error: { message: 'bad key sk-abcdefghijklmnopqrstuvwxyz012345' } }, 401);
+        }
+        return jsonResponse({ error: { message: 'slow down' } }, 429);
+      });
+      try {
+        await assert.rejects(
+          () => generateWithFallback([{ role: 'user', content: 'hi' }]),
+          (err) => {
+            assert.equal(err.name, 'AiError');
+            assert.match(err.message, /Gemini/);
+            assert.match(err.message, /Grok/);
+            assert.match(err.message, /DeepSeek/);
+            assert.match(err.message, /500/);
+            assert.match(err.message, /429/);
+            assert.ok(!err.message.includes('sk-abcdefghijklmnopqrstuvwxyz012345'), 'provider key is redacted');
+            assert.equal(err.attempts.length, 3);
+            return true;
+          }
+        );
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('a hanging provider is abandoned at its deadline and the next one answers', async () => {
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: '', aiFallbackOrder: ['gemini', 'grok'], aiTimeoutMs: 1000 },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) return new Promise(() => {}); // never resolves
+        return jsonResponse({ choices: [{ message: { content: 'از Grok' }, finish_reason: 'stop' }] });
+      });
+      try {
+        const started = Date.now();
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }], '', { timeoutMs: 1000 });
+        assert.equal(result.provider, 'grok');
+        assert.equal(result.attempts[0].kind, 'timeout');
+        assert.ok(Date.now() - started < 5000, 'the chain did not wait for the hanging provider');
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('an empty answer is treated as a failure, a missing key as a skip', async () => {
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: 'd', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) {
+          return jsonResponse({ candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'STOP' }] });
+        }
+        return jsonResponse({ choices: [{ message: { content: 'از DeepSeek' }, finish_reason: 'stop' }] });
+      });
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(result.provider, 'deepseek');
+        assert.equal(result.attempts[0].kind, 'empty');
+        assert.equal(result.attempts[1].skipped, true, 'a provider without a key is skipped, not failed');
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('summariseAttempts paints active / failed / skipped badges in order', async () => {
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: '', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      const providers = summariseAttempts(
+        [
+          { provider: 'gemini', ok: false, status: 429, kind: 'rate_limit', message: 'quota' },
+          { provider: 'grok', ok: true, status: 200, kind: 'ok', message: '' },
+        ],
+        'grok'
+      );
+      assert.deepEqual(providers.map((p) => [p.name, p.status]), [
+        ['gemini', 'failed'],
+        ['grok', 'active'],
+        ['deepseek', 'skipped'],
+      ]);
+      assert.equal(providerCatalog().length, 3);
+    }
+  );
+});
+
+test('the agent endpoint returns the provider that answered', async () => {
+  __resetDatabase();
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) return jsonResponse({ error: { message: 'quota' } }, 429);
+        if (String(url).includes('api.x.ai')) return jsonResponse({ error: { message: 'down' } }, 503);
+        return jsonResponse({ choices: [{ message: { content: 'پاسخ از DeepSeek ✅' }, finish_reason: 'stop' }], model: 'deepseek-chat' });
+      });
+      try {
+        const result = await agentEndpoint({ prompt: 'سلام' }, ctxFor());
+        assert.equal(result.provider, 'deepseek');
+        assert.equal(result.providerLabel, 'DeepSeek');
+        assert.equal(result.model, 'deepseek-chat');
+        assert.equal(result.output, 'پاسخ از DeepSeek ✅');
+        assert.deepEqual(result.providers.map((p) => p.status), ['failed', 'failed', 'active']);
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('the agent endpoint surfaces the failed chain when every provider fails', async () => {
+  __resetDatabase();
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd', aiFallbackOrder: ['gemini', 'grok', 'deepseek'] },
+    async () => {
+      __setFetchMock(async () => jsonResponse({ error: { message: 'quota' } }, 429));
+      try {
+        await assert.rejects(
+          () => agentEndpoint({ prompt: 'سلام' }, ctxFor()),
+          (err) => {
+            assert.equal(err.code, 'AI_ERROR');
+            assert.match(err.message, /Gemini/);
+            assert.deepEqual(err.parameters.providers.map((p) => p.status), ['failed', 'failed', 'failed']);
+            return true;
+          }
+        );
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
 });

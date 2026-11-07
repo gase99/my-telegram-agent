@@ -8,13 +8,52 @@
 // uploaded to the platform on `push`, but never committed to Git.
 // Never put a real key in this example file.
 
-// ── AI (Google Gemini) ──────────────────────────────────────────────────────
-// https://aistudio.google.com/apikey
+// ── AI providers (automatic failover) ───────────────────────────────────────
+// Every provider is optional: only the ones with a key are attempted, in the
+// order of AI_FALLBACK_ORDER below. A provider that answers 429 / 403 / 5xx,
+// hangs for longer than AI_TIMEOUT_MS, or returns an empty answer is logged
+// and skipped, and the next provider answers instead. `lib/ai.js` holds the
+// adapters (Gemini uses `contents`/`parts`; Grok and DeepSeek are
+// OpenAI-compatible and use `messages`).
+
+// Google Gemini — https://aistudio.google.com/apikey
+// Endpoint: {GEMINI_BASE_URL}/models/{GEMINI_MODEL}:generateContent
 export const GEMINI_API_KEY = '';
 export const GEMINI_MODEL = 'gemini-3.5-flash';
+export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+
+// xAI Grok (OpenAI compatible) — https://console.x.ai
+// Endpoint: {XAI_BASE_URL}/chat/completions  (Authorization: Bearer <key>)
+// The default is xAI's fast non-reasoning model; swap it for another id from
+// https://docs.x.ai/docs/models if your account does not have it.
+export const XAI_API_KEY = '';
+export const XAI_MODEL = 'grok-4-fast-non-reasoning';
+export const XAI_BASE_URL = 'https://api.x.ai/v1';
+
+// DeepSeek (OpenAI compatible) — https://platform.deepseek.com/api_keys
+// Endpoint: {DEEPSEEK_BASE_URL}/chat/completions  (Authorization: Bearer <key>)
+// `deepseek-chat` is the general model; `deepseek-reasoner` is slower and
+// often exceeds the 15s provider timeout, so it is a poor failover target.
+export const DEEPSEEK_API_KEY = '';
+export const DEEPSEEK_MODEL = 'deepseek-chat';
+export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+
+// Which provider answers first. Names: 'gemini' | 'grok' | 'deepseek'
+// ('xai' is accepted as an alias for 'grok'). Unknown names are ignored and
+// providers without a key are skipped without counting as a failure.
+export const AI_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek'];
+// Per-provider deadline. A provider that hangs is aborted and the next one is
+// tried. Keep this well under the platform's endpoint limit (the agent turn
+// itself is capped at 42s and shares this budget across the chain).
+export const AI_TIMEOUT_MS = 15000;
+
+// ── Generation knobs (shared by all providers) ──────────────────────────────
+// The GEMINI_* names are kept for older deployments; the AI_* values win.
 export const GEMINI_TEMPERATURE = 0.7;
 // Thinking models bill reasoning tokens too; keep this well above 512.
 export const GEMINI_MAX_OUTPUT_TOKENS = 8192;
+// export const AI_TEMPERATURE = 0.7;
+// export const AI_MAX_OUTPUT_TOKENS = 8192;
 
 // ── GitHub ──────────────────────────────────────────────────────────────────
 // Classic token with `repo` + `workflow` scopes, or a fine-grained token with

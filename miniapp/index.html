@@ -168,6 +168,40 @@
   .badge.ok { color: var(--green); border-color: rgba(57, 255, 154, .3); background: rgba(57, 255, 154, .06); }
   .badge.bad { color: var(--red); border-color: rgba(255, 93, 115, .25); }
 
+  /* ── AI provider badges (failover chain) ─────────────────────────────── */
+  /*   active  green  — this provider answered the last request
+       failed  red    — it hit a rate limit / error and was skipped
+       busy    amber  — a request is in flight
+       idle    dim    — configured, standing by
+       off     faded  — no API key on the server                       */
+  .badge-sep {
+    flex: 0 0 auto;
+    width: 1px;
+    margin: 2px 3px;
+    background: var(--line-bright);
+    opacity: .7;
+  }
+  .badge.model { font-weight: 600; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+  .badge.model.idle { opacity: .6; }
+  .badge.model.off { opacity: .32; }
+  .badge.model.off .dot { background: var(--dim); }
+  .badge.model.busy { color: var(--amber); border-color: rgba(255, 200, 87, .35); }
+  .badge.model.busy .dot { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
+  .badge.model.active {
+    color: var(--green);
+    border-color: rgba(57, 255, 154, .45);
+    background: rgba(57, 255, 154, .1);
+    box-shadow: 0 0 14px rgba(57, 255, 154, .14);
+  }
+  .badge.model.active .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .badge.model.failed {
+    color: var(--red);
+    border-color: rgba(255, 93, 115, .4);
+    background: rgba(255, 93, 115, .08);
+  }
+  .badge.model.failed .dot { background: var(--red); box-shadow: 0 0 8px rgba(255, 93, 115, .7); }
+  .badge.model.failed .badge-name { text-decoration: line-through; text-decoration-thickness: 1px; }
+
   /* ── terminal output ─────────────────────────────────────────────────── */
   main {
     flex: 1 1 auto;
@@ -573,7 +607,11 @@
     <span class="badge" data-svc="github"><span class="dot"></span> GitHub</span>
     <span class="badge" data-svc="gitlab"><span class="dot"></span> GitLab</span>
     <span class="badge" data-svc="gdrive"><span class="dot"></span> Drive</span>
-    <span class="badge" data-svc="gemini"><span class="dot"></span> Gemini</span>
+    <span class="badge-sep" aria-hidden="true"></span>
+    <!-- AI providers in failover order; painted per request by applyProviderReport() -->
+    <span class="badge model idle" data-model="gemini" title="Gemini"><span class="dot"></span><span class="badge-name">✨ Gemini</span></span>
+    <span class="badge model idle" data-model="grok" title="Grok"><span class="dot"></span><span class="badge-name">🚀 Grok</span></span>
+    <span class="badge model idle" data-model="deepseek" title="DeepSeek"><span class="dot"></span><span class="badge-name">🐋 DeepSeek</span></span>
   </div>
 
   <main id="terminal" role="log" aria-live="polite"></main>
@@ -654,6 +692,9 @@
     busy: false,
     history: [],
     status: null,
+    // Per-provider badge state: { gemini: { status, detail }, … }
+    models: {},
+    providers: [],
     user: null,
     chatId: null,
     queue: [],
@@ -868,13 +909,29 @@
     return wrap;
   }
 
-  // ── status panel ──────────────────────────────────────────────────────────
+  // ── status bar: connected services + AI providers ────────────────────────
   const SERVICE_LABELS = {
     github: { icon: '🐙', name: 'GitHub' },
     gitlab: { icon: '🦊', name: 'GitLab' },
     gdrive: { icon: '📁', name: 'Google Drive' },
-    gemini: { icon: '🤖', name: 'Gemini' },
   };
+
+  // The failover chain. Keep the order in sync with AI_FALLBACK_ORDER in
+  // tgcloud/lib/config.js; unknown names coming from the server are ignored.
+  const MODEL_LABELS = {
+    gemini: { icon: '✨', name: 'Gemini' },
+    grok: { icon: '🚀', name: 'Grok' },
+    deepseek: { icon: '🐋', name: 'DeepSeek' },
+  };
+  const MODEL_STATUS_TEXT = {
+    active: 'پاسخ این درخواست را داد ✅',
+    failed: 'ناموفق بود؛ نوبت به بعدی رسید ❌',
+    busy: 'در حال پاسخ…',
+    idle: 'آماده است (این درخواست به آن نرسید)',
+    off: 'کلید API تنظیم نشده',
+  };
+
+  const modelMeta = (name) => MODEL_LABELS[name] || { icon: '🤖', name: name || 'مدل' };
 
   function setBadge(service, connected, detail) {
     const badge = el.badges.querySelector(`[data-svc="${service}"]`);
@@ -886,65 +943,156 @@
     badge.title = detail || '';
   }
 
+  /** Paint one provider badge: active | failed | busy | idle | off. */
+  function setModelBadge(name, status, detail) {
+    const badge = el.badges.querySelector(`[data-model="${name}"]`);
+    if (!badge) return;
+    const meta = modelMeta(name);
+    badge.classList.remove('active', 'failed', 'busy', 'idle', 'off');
+    badge.classList.add(status);
+    const dot = badge.querySelector('.dot');
+    if (dot) {
+      const dotClass = status === 'active' ? 'on' : status === 'failed' ? 'off' : status === 'busy' ? 'warn pulse' : '';
+      dot.className = `dot ${dotClass}`.trim();
+    }
+    badge.title = detail ? `${meta.name} — ${detail}` : meta.name;
+    state.models[name] = { status, detail: detail || '' };
+  }
+
+  /** A request starts: every provider with a key goes amber. */
+  function markProvidersBusy() {
+    Object.entries(state.models).forEach(([name, info]) => {
+      if (info.status === 'off') return;
+      setModelBadge(name, 'busy', 'در انتظار پاسخ…');
+    });
+  }
+
+  /**
+   * A request finished. Green for the provider that actually answered, red for
+   * the ones that failed over (rate limit, quota, 5xx, timeout).
+   */
+  function applyProviderReport(provider, providers) {
+    const list = Array.isArray(providers) ? providers : [];
+    if (!list.length) {
+      // Older backend: it only tells us who answered.
+      if (provider) setModelBadge(provider, 'active', '');
+      return;
+    }
+    list.forEach((item) => {
+      if (!item || !item.name) return;
+      if (item.status === 'active') setModelBadge(item.name, 'active', '');
+      else if (item.status === 'failed') setModelBadge(item.name, 'failed', item.message || 'خطا یا محدودیت نرخ');
+      else if (item.status === 'skipped') setModelBadge(item.name, 'off', 'کلید API تنظیم نشده');
+      else setModelBadge(item.name, 'idle', '');
+    });
+  }
+
+  /** The whole chain failed; keep the reason on the badges. */
+  function markProvidersFailed(detail) {
+    Object.entries(state.models).forEach(([name, info]) => {
+      if (info.status === 'off') return;
+      setModelBadge(name, 'failed', detail || 'پاسخی نرسید');
+    });
+  }
+
+  /** Status refresh: configured providers stand by, the rest are switched off. */
+  function applyProviderCatalog(providers) {
+    (providers || []).forEach((provider) => {
+      if (!provider?.name) return;
+      setModelBadge(
+        provider.name,
+        provider.configured ? 'idle' : 'off',
+        provider.configured ? `مدل: ${provider.model || '—'}` : 'کلید API تنظیم نشده'
+      );
+    });
+  }
+
+  /** The receipt line printed under an answer: `[System: Handled by Grok 🚀]`. */
+  function handledLine(provider, providerLabel, providers) {
+    if (!provider) return '';
+    const meta = modelMeta(provider);
+    const label = providerLabel || meta.name;
+    const failed = (Array.isArray(providers) ? providers : [])
+      .filter((item) => item && item.status === 'failed')
+      .map((item) => modelMeta(item.name).name);
+    return `[System: Handled by ${label} ${meta.icon}]${failed.length ? ` · fallback from ${failed.join(', ')}` : ''}`;
+  }
+
   function applyStatus(data) {
     state.status = data;
     const services = data?.services || {};
-    const geminiOk = Boolean(data?.model?.configured);
+    const model = data?.model || {};
+    // Newest backend sends the full chain; fall back to a single Gemini badge.
+    const providers =
+      Array.isArray(model.providers) && model.providers.length
+        ? model.providers
+        : [{ name: 'gemini', label: 'Gemini', emoji: '✨', model: model.name, configured: Boolean(model.configured) }];
+    state.providers = providers;
 
     setBadge('github', services.github?.connected, services.github?.reason || services.github?.login);
     setBadge('gitlab', services.gitlab?.connected, services.gitlab?.reason || services.gitlab?.login);
     setBadge('gdrive', services.gdrive?.connected, services.gdrive?.reason || services.gdrive?.email);
-    setBadge('gemini', geminiOk, data?.model?.name);
+    applyProviderCatalog(providers);
 
     const connected = ['github', 'gitlab', 'gdrive'].filter((key) => services[key]?.connected).length;
-    el.connDot.className = `dot ${connected > 0 ? 'on' : 'warn'}`;
-    el.connText.textContent = `${connected}/3 سرویس متصل · ${data?.model?.name || 'Gemini'}`;
+    const ready = providers.filter((provider) => provider.configured);
+    el.connDot.className = `dot ${connected > 0 || ready.length ? 'on' : 'warn'}`;
+    el.connText.textContent = `${connected}/3 سرویس · AI: ${
+      ready.length ? ready.map((provider) => modelMeta(provider.name).name).join(' / ') : 'بدون کلید'
+    }`;
 
-    renderServicePanel(services, geminiOk, data?.model?.name);
+    renderServicePanel(services, providers);
     (data?.pending || []).forEach((pending) => approvalCard(pending));
   }
 
-  function renderServicePanel(services, geminiOk, modelName) {
+  function renderServicePanel(services, providers) {
     const rows = [
       {
-        key: 'github',
+        icon: SERVICE_LABELS.github.icon,
+        name: SERVICE_LABELS.github.name,
         detail: services.github?.connected
           ? `@${services.github.login}${services.github.defaultRepo ? ` · ${services.github.defaultRepo}` : ''}`
           : services.github?.reason || 'متصل نیست',
         ok: services.github?.connected,
       },
       {
-        key: 'gitlab',
+        icon: SERVICE_LABELS.gitlab.icon,
+        name: SERVICE_LABELS.gitlab.name,
         detail: services.gitlab?.connected
           ? `@${services.gitlab.login}${services.gitlab.defaultProject ? ` · ${services.gitlab.defaultProject}` : ''}`
           : services.gitlab?.reason || 'متصل نیست',
         ok: services.gitlab?.connected,
       },
       {
-        key: 'gdrive',
+        icon: SERVICE_LABELS.gdrive.icon,
+        name: SERVICE_LABELS.gdrive.name,
         detail: services.gdrive?.connected
           ? `${services.gdrive.email}${services.gdrive.folder ? ` · ${services.gdrive.folder.name}` : ''}`
           : services.gdrive?.reason || 'متصل نیست',
         ok: services.gdrive?.connected,
       },
-      {
-        key: 'gemini',
-        detail: geminiOk ? `مدل: ${modelName || 'تنظیم‌شده'}` : 'کلید API تنظیم نشده',
-        ok: geminiOk,
-      },
+      // The AI chain, in failover order.
+      ...(providers || []).map((provider) => ({
+        icon: modelMeta(provider.name).icon,
+        name: modelMeta(provider.name).name,
+        detail: provider.configured ? `مدل: ${provider.model || '—'}` : 'کلید API تنظیم نشده',
+        ok: provider.configured,
+      })),
     ];
 
     el.services.innerHTML = rows
-      .map(({ key, detail, ok }) => {
-        const meta = SERVICE_LABELS[key];
+      .map(({ icon, name, detail, ok }) => {
+        const state_ = state.models[name.toLowerCase()];
+        const note = state_ ? MODEL_STATUS_TEXT[state_.status] || '' : '';
         return `
           <div class="service">
             <div class="service-head">
               <span class="dot ${ok ? 'on' : 'off'}"></span>
-              <span class="service-name">${meta.icon} ${meta.name}</span>
+              <span class="service-name">${icon} ${name}</span>
               <span class="service-meta" style="direction:rtl;text-align:left;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? 'متصل' : 'قطع'}</span>
             </div>
             <div class="service-meta ${ok ? '' : 'bad'}">${escapeHtml(detail)}</div>
+            ${note ? `<div class="service-meta">${escapeHtml(note)}</div>` : ''}
           </div>`;
       })
       .join('');
@@ -966,7 +1114,12 @@
       setBadge('github', false);
       setBadge('gitlab', false);
       setBadge('gdrive', false);
-      setBadge('gemini', false);
+      // The model chain is unknown, not broken: do not pretend it answered.
+      Object.keys(MODEL_LABELS).forEach((name) => {
+        if (state.models[name]?.status !== 'active' && state.models[name]?.status !== 'failed') {
+          setModelBadge(name, 'off', 'وضعیت نامشخص');
+        }
+      });
       if (announce) toast(err.message);
     }
   }
@@ -1056,6 +1209,7 @@
 
     appendEntry({ role: 'user', content: prompt });
     const pendingEntry = typingEntry();
+    markProvidersBusy();
 
     try {
       const result = await call('agent', { prompt, chatId: state.chatId });
@@ -1068,14 +1222,21 @@
       });
 
       appendEntry({ role: 'assistant', content: result.output || '(بدون پاسخ)' });
+
+      // Which model answered, and which ones were skipped on the way there.
+      applyProviderReport(result.provider, result.providers);
+      const handled = handledLine(result.provider, result.providerLabel, result.providers);
+      if (handled) appendSystem(handled);
+
       (result.pending || []).forEach((pending) => approvalCard(pending));
 
       haptic('success');
       if (result.usage?.totalTokenCount) {
-        appendSystem(`tokens: ${result.usage.totalTokenCount} · model: ${result.model || 'gemini'}`);
+        appendSystem(`tokens: ${result.usage.totalTokenCount} · provider: ${result.provider || 'gemini'} · model: ${result.model || '—'}`);
       }
     } catch (err) {
       pendingEntry.remove();
+      markProvidersFailed(err.message);
       appendError(`❌ ${err.message}`);
       haptic('error');
     } finally {
@@ -1175,10 +1336,21 @@
   el.badges.addEventListener('click', (event) => {
     const badge = event.target.closest('.badge');
     if (!badge) return;
+
+    // AI provider badge: its status is per request, not per connection.
+    const model = badge.dataset.model;
+    if (model) {
+      const meta = modelMeta(model);
+      const info = state.models[model];
+      if (!info) return toast(`${meta.name}: هنوز وضعیتی دریافت نشده`);
+      const status = MODEL_STATUS_TEXT[info.status] || info.status;
+      return toast(`${meta.name}: ${status}${info.detail ? ` — ${info.detail}` : ''}`, 3200);
+    }
+
     const service = badge.dataset.svc;
-    const info = state.status?.services?.[service] || (service === 'gemini' ? state.status?.model : null);
+    const info = state.status?.services?.[service];
     if (!info) return toast('هنوز وضعیتی دریافت نشده');
-    toast(info.connected ?? info.configured ? `${service}: متصل` : `${service}: ${info.reason || 'قطع'}`);
+    toast(info.connected ? `${service}: متصل` : `${service}: ${info.reason || 'قطع'}`);
   });
 
   document.querySelectorAll('.cmd').forEach((button) => {
@@ -1254,10 +1426,20 @@
   }
 
   // ── boot ──────────────────────────────────────────────────────────────────
+
+  /** Seed the badge state from the markup so a fast first send still paints them. */
+  function primeModelBadges() {
+    el.badges.querySelectorAll('[data-model]').forEach((badge) => {
+      const name = badge.dataset.model;
+      if (!state.models[name]) state.models[name] = { status: 'idle', detail: 'وضعیت نامشخص' };
+    });
+  }
+
   async function boot() {
     initTelegram();
     autoGrow();
     setComposerState();
+    primeModelBadges();
     await loadHistory();
     refreshStatus(false);
     el.input.focus?.();

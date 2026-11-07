@@ -2,6 +2,11 @@
 //
 // Response: { model, services: { github, gitlab, gdrive }, pending, usage }
 //
+// `model.providers` lists every AI provider in failover order with its model
+// id and whether a key is configured — the Mini App paints those badges from
+// it, and the per-request status (`active` / `failed`) comes back from the
+// `agent` endpoint.
+//
 // Each integration reports `{ connected, ... }` and, when it is not connected,
 // a Persian `reason`. Probing is parallel and never throws: a broken token must
 // render a red badge, not break the terminal.
@@ -11,6 +16,7 @@ import * as github from '../lib/github.js';
 import * as gitlab from '../lib/gitlab.js';
 import * as gdrive from '../lib/gdrive.js';
 import { integrationStatus, isUserAllowed, ACCESS_DENIED_MESSAGE, redactSecrets } from '../lib/security.js';
+import { providerCatalog } from '../lib/ai.js';
 import { pendingApprovals } from '../lib/approvals.js';
 import { settings } from '../lib/settings.js';
 
@@ -35,8 +41,17 @@ export default async function getStatus(_input, ctx) {
     probe(() => pendingApprovals({ userId })),
   ]);
 
+  const providers = providerCatalog();
+
   return {
-    model: { name: settings.geminiModel, configured: configured.gemini },
+    model: {
+      // The first provider in the failover order is the default answerer.
+      name: providers.find((provider) => provider.configured)?.model || settings.geminiModel,
+      configured: providers.some((provider) => provider.configured),
+      order: providers.map((provider) => provider.name),
+      timeoutMs: settings.aiTimeoutMs,
+      providers,
+    },
     services: { github: githubStatus, gitlab: gitlabStatus, gdrive: driveStatus },
     pending: Array.isArray(pending) ? pending : [],
     checkedAt: new Date().toISOString(),

@@ -9,7 +9,13 @@
 import { settings, integrationStatus as configuredStatus } from './settings.js';
 
 /** Config values that must never appear in any output. */
-const SECRET_CONFIG_KEYS = ['GEMINI_API_KEY', 'GITHUB_TOKEN', 'GITLAB_TOKEN'];
+const SECRET_CONFIG_KEYS = [
+  'GEMINI_API_KEY',
+  'XAI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'GITHUB_TOKEN',
+  'GITLAB_TOKEN',
+];
 
 /** Token shapes worth masking even when the value is unknown to us. */
 const SECRET_PATTERNS = [
@@ -17,6 +23,8 @@ const SECRET_PATTERNS = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, // GitHub fine-grained tokens
   /\bglpat-[A-Za-z0-9_-]{16,}\b/g, // GitLab personal access tokens
   /\bAIza[0-9A-Za-z_-]{30,}\b/g, // Google API keys
+  /\bxai-[0-9A-Za-z_-]{20,}\b/g, // xAI (Grok) API keys
+  /\bsk-[0-9A-Za-z_-]{20,}\b/g, // OpenAI-compatible keys (DeepSeek, …)
   /\bya29\.[0-9A-Za-z_-]{20,}\b/g, // Google OAuth tokens
   /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, // Bot API token "<bot_id>:<secret>"
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
@@ -26,6 +34,8 @@ const SECRET_PATTERNS = [
 function knownSecrets() {
   const values = [
     settings.geminiApiKey,
+    settings.xaiApiKey,
+    settings.deepseekApiKey,
     settings.githubToken,
     settings.gitlabToken,
     settings.googleServiceAccount?.private_key,

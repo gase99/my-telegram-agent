@@ -11,7 +11,7 @@
 import { api, db } from 'sdk';
 import { and, eq, isNull } from 'sdk/db';
 import { messages } from '../schema.js';
-import { runAgent } from '../lib/ai.js';
+import { runAgent, providerCatalog } from '../lib/ai.js';
 import { ensureChat, addMessage, recentMessages } from '../lib/store.js';
 import { isUserAllowed, ACCESS_DENIED_MESSAGE, integrationStatus, redactSecrets } from '../lib/security.js';
 import { needsApproval } from '../lib/approvals.js';
@@ -78,6 +78,9 @@ export default async function (msg, ctx) {
     reply += `\n\n⚠️ این عملیات به تأیید شما نیاز دارد:\n${lines}\nبرای تأیید، مینی‌اپ را باز کنید.`;
   }
 
+  const fallbackNote = describeFallback(result);
+  if (fallbackNote) reply += `\n\n${fallbackNote}`;
+
   await addMessage({ userId, chatRef: chat.id, chatId, role: 'assistant', content: reply });
   await sendSafe(chatId, reply);
 }
@@ -98,8 +101,17 @@ async function handleCommand({ chatId, userId, text }) {
   }
   if (command === '/status') {
     const state = integrationStatus();
+    const ai = providerCatalog();
+    const aiLines = ai.map((provider) => {
+      const icon = provider.configured ? '🟢' : '🔴';
+      const model = provider.configured ? `مدل: ${provider.model}` : 'کلید تنظیم نشده';
+      return `${icon} ${provider.emoji} ${provider.label} — ${model}`;
+    });
+    // The order in parentheses is the failover chain.
+    const order = ai.map((provider) => provider.label).join(' → ');
     const lines = [
-      `${state.gemini ? '🟢' : '🔴'} Gemini — ${state.gemini ? 'متصل' : 'کلید تنظیم نشده'}`,
+      ...aiLines,
+      `↳ ترتیب جایگزینی: ${order}`,
       `${state.github ? '🟢' : '🔴'} GitHub — ${state.github ? 'توکن موجود' : 'توکن تنظیم نشده'}`,
       `${state.gitlab ? '🟢' : '🔴'} GitLab — ${state.gitlab ? 'توکن موجود' : 'توکن تنظیم نشده'}`,
       `${state.gdrive ? '🟢' : '🔴'} Google Drive — ${state.gdrive ? 'سرویس‌اکانت موجود' : 'تنظیم نشده'}`,
@@ -232,6 +244,19 @@ async function sendSafe(chatId, text, { replyMarkup } = {}) {
       throw second;
     }
   }
+}
+
+/**
+ * When the first provider failed over, say so in one short line — otherwise the
+ * chat looks identical no matter which model answered.
+ */
+function describeFallback(result) {
+  const used = result?.provider;
+  if (!used) return '';
+  const failed = (result.attempts || []).filter((attempt) => !attempt.ok && !attempt.skipped);
+  if (!failed.length) return '';
+  const labels = failed.map((attempt) => attempt.label).join(', ');
+  return `🔁 پاسخ از ${result.providerLabel || used} آمد (${labels} پاسخ نداد).`;
 }
 
 function escapeTags(value) {
