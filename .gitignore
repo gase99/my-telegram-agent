@@ -1,4 +1,13 @@
 .tgcloud/
 node_modules/
+
+# Local secrets — copy lib/config.example.js and never commit the result
 tgcloud/lib/config.js
-tgcloud/lib/config.js
+
+# Local preview screenshots
+.preview-*.png
+
+# Termux environment file
+.env
+.env.*
+!.env.example

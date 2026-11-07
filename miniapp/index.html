@@ -1,179 +1,1270 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="fa" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>AI Coding Terminal</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    :root {
-      --bg: #0d1117;
-      --text: #00ff00;
-      --prompt-color: #58a6ff;
-      --border: #30363d;
-      --input-bg: #161b22;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; padding: 0; height: 100vh; height: 100dvh; /* رفع مشکل کیبورد در موبایل */
-      display: flex; flex-direction: column;
-      background-color: var(--bg); color: var(--text);
-      font-family: 'Courier New', Courier, monospace;
-      overflow: hidden;
-    }
-    #terminal {
-      flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.5;
-      white-space: pre-wrap; word-break: break-all;
-    }
-    .line { margin-bottom: 8px; }
-    .command { color: #ffffff; }
-    .prompt { color: var(--prompt-color); font-weight: bold;}
-    .system { color: #d2a8ff; }
-    .error { color: #ff7b72; }
-    
-    #input-area {
-      display: flex; background: var(--input-bg); border-top: 1px solid var(--border);
-      padding: 10px; align-items: flex-end; flex-shrink: 0; padding-bottom: max(10px, env(safe-area-inset-bottom));
-    }
-    #prompt-symbol {
-      color: var(--text); padding: 10px 5px 10px 10px; font-weight: bold; white-space: nowrap;
-    }
-    #command-input {
-      flex: 1; background: transparent; border: none; outline: none;
-      color: #ffffff; font-family: inherit; font-size: 15px; padding: 10px;
-      resize: none; max-height: 100px; min-height: 40px; line-height: 1.2;
-    }
-    #send-btn {
-      background: var(--prompt-color); color: #fff; border: none; border-radius: 5px;
-      padding: 10px 15px; margin-right: 5px; font-size: 16px; cursor: pointer;
-      font-weight: bold; display: flex; justify-content: center; align-items: center;
-    }
-    #send-btn:active { background: #79c0ff; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#05080a">
+<title>TERMINAL-AI</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #05080a;
+    --bg-soft: #0a1015;
+    --panel: #0d151b;
+    --panel-2: #111c24;
+    --line: #1d2c36;
+    --line-bright: #29424f;
+    --text: #d6e6ef;
+    --dim: #6b8794;
+    --green: #39ff9a;
+    --green-dim: #1f8f5a;
+    --cyan: #35d6ff;
+    --amber: #ffc857;
+    --red: #ff5d73;
+    --violet: #b98cff;
+    --font: "SFMono-Regular", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, monospace;
+    --radius: 14px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --header-h: 52px;
+    --composer-h: 64px;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13.5px;
+    line-height: 1.65;
+    overscroll-behavior: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    /* Telegram's viewport can shrink when the keyboard opens; we follow it. */
+    height: var(--tg-viewport-height, 100dvh);
+    overflow: hidden;
+    padding-top: var(--safe-top);
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(57, 255, 154, .09), transparent 42%),
+      radial-gradient(circle at 88% 0%, rgba(53, 214, 255, .07), transparent 45%);
+  }
+
+  /* ── top bar ─────────────────────────────────────────────────────────── */
+  header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: var(--header-h);
+    padding: 0 12px;
+    background: linear-gradient(180deg, rgba(13, 21, 27, .97), rgba(10, 16, 21, .92));
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    z-index: 20;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .brand-mark {
+    width: 30px; height: 30px;
+    display: grid; place-items: center;
+    border-radius: 9px;
+    background: linear-gradient(145deg, rgba(57, 255, 154, .18), rgba(53, 214, 255, .12));
+    border: 1px solid var(--line-bright);
+    color: var(--green);
+    font-size: 15px;
+    box-shadow: 0 0 18px rgba(57, 255, 154, .12) inset;
+    flex: 0 0 auto;
+  }
+
+  .brand-text { min-width: 0; }
+  .brand-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    color: #eaf7ff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand-sub {
+    font-size: 10px;
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex: 0 0 auto;
+  }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  .dot.off { background: var(--red); box-shadow: 0 0 8px rgba(255, 93, 115, .7); }
+  .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .icon-btn {
+    flex: 0 0 auto;
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .icon-btn:active { background: var(--panel-2); transform: scale(.96); }
+
+  /* ── status strip (connection badges) ────────────────────────────────── */
+  .badges {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-soft);
+  }
+  .badges::-webkit-scrollbar { display: none; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 10.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .badge.ok { color: var(--green); border-color: rgba(57, 255, 154, .3); background: rgba(57, 255, 154, .06); }
+  .badge.bad { color: var(--red); border-color: rgba(255, 93, 115, .25); }
+
+  /* ── terminal output ─────────────────────────────────────────────────── */
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px 12px 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+  main::-webkit-scrollbar { width: 5px; }
+  main::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 3px; }
+
+  .entry {
+    margin-bottom: 14px;
+    animation: entryIn .18s ease-out;
+  }
+  @keyframes entryIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .entry-prompt {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    font-size: 12px;
+    color: var(--dim);
+    margin-bottom: 3px;
+  }
+  .ps1 {
+    color: var(--green);
+    font-weight: 700;
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+  .stamp { direction: ltr; unicode-bidi: isolate; }
+  .ps1 .path { color: var(--cyan); }
+  .entry-user-text {
+    color: #f2fbff;
+    /* user input keeps its own direction (Persian RTL, code LTR) */
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 2px 0 6px 0;
+    border-bottom: 1px dashed rgba(41, 66, 79, .55);
+  }
+
+  .entry-body {
+    padding: 8px 10px;
+    border-radius: 0 10px 10px 10px;
+    border: 1px solid var(--line);
+    border-right: 2px solid var(--green-dim);
+    background: linear-gradient(180deg, rgba(17, 28, 36, .82), rgba(13, 21, 27, .82));
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  .entry.error .entry-body { border-right-color: var(--red); color: #ffd5db; }
+  .entry.event .entry-body {
+    border: none;
+    background: transparent;
+    padding: 2px 0;
+    color: var(--dim);
+    font-size: 12px;
+    border-right: 0;
+  }
+
+  /* inline markdown-ish rendering */
+  .entry-body strong { color: #9dffcb; font-weight: 700; }
+  .entry-body em { color: var(--amber); font-style: normal; text-decoration: underline dotted; }
+  .entry-body .inline-code {
+    background: rgba(53, 214, 255, .1);
+    color: var(--cyan);
+    border: 1px solid rgba(53, 214, 255, .18);
+    border-radius: 5px;
+    padding: 0 4px;
+    font-size: 12px;
+  }
+  .entry-body a { color: var(--cyan); }
+
+  pre.code {
+    margin: 8px 0;
+    padding: 10px;
+    border-radius: 10px;
+    background: #060c10;
+    border: 1px solid var(--line);
+    overflow-x: auto;
+    direction: ltr;
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.55;
+    position: relative;
+  }
+  pre.code .code-lang {
+    position: absolute;
+    top: 0; left: 0;
+    font-size: 9px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    background: var(--panel-2);
+    border-radius: 10px 0 8px 0;
+    padding: 1px 7px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  pre.code code { color: #c8f7e0; }
+  pre.code .copy {
+    position: absolute;
+    top: 5px; right: 6px;
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--line-bright);
+    background: var(--panel-2);
+    color: var(--dim);
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .tool-line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    color: var(--dim);
+    padding: 1px 0;
+  }
+  .tool-line .status { font-size: 11px; }
+  .tool-line.ok { color: #7fe3b2; }
+  .tool-line.err { color: var(--red); }
+
+  /* typing indicator */
+  .typing {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--green);
+  }
+  .typing span {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: bounce 1.1s infinite ease-in-out;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: .35; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  /* approval card */
+  .approval {
+    margin-top: 8px;
+    border: 1px solid rgba(255, 200, 87, .45);
+    border-radius: 12px;
+    background: rgba(255, 200, 87, .06);
+    padding: 10px;
+  }
+  .approval-title { color: var(--amber); font-size: 11.5px; margin-bottom: 6px; }
+  .approval-label {
+    color: #ffe9b8;
+    font-size: 12px;
+    word-break: break-word;
+    direction: ltr;
+    text-align: right;
+  }
+  .approval-actions { display: flex; gap: 8px; margin-top: 9px; }
+  .approval-actions button {
+    flex: 1;
+    padding: 7px;
+    border-radius: 9px;
+    border: 1px solid var(--line-bright);
+    background: var(--panel-2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .approval-actions button.primary { background: rgba(57, 255, 154, .14); border-color: rgba(57, 255, 154, .45); color: var(--green); }
+  .approval-actions button.danger { background: rgba(255, 93, 115, .12); border-color: rgba(255, 93, 115, .4); color: var(--red); }
+
+  /* ── composer ────────────────────────────────────────────────────────── */
+  footer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(13, 21, 27, .96), rgba(5, 8, 10, .99));
+    padding: 8px 10px calc(8px + var(--safe-bottom));
+    z-index: 20;
+  }
+
+  .hint {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--dim);
+    padding: 0 2px 6px;
+  }
+  .hint .counter.over { color: var(--red); }
+
+  .composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 6px;
+    transition: border-color .15s ease;
+  }
+  .composer:focus-within { border-color: rgba(57, 255, 154, .45); box-shadow: 0 0 0 3px rgba(57, 255, 154, .07); }
+
+  .ps1-mobile {
+    color: var(--green);
+    font-size: 11px;
+    padding: 8px 2px 8px 6px;
+    flex: 0 0 auto;
+    user-select: none;
+    direction: ltr;
+    unicode-bidi: isolate;
+    white-space: nowrap;
+  }
+
+  textarea {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 34px;
+    max-height: 132px;
+    resize: none;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13.5px;
+    line-height: 1.5;
+    padding: 7px 2px;
+  }
+  textarea::placeholder { color: #46606c; }
+
+  .send {
+    flex: 0 0 auto;
+    width: 38px; height: 38px;
+    border-radius: 11px;
+    border: 1px solid rgba(57, 255, 154, .4);
+    background: linear-gradient(145deg, rgba(57, 255, 154, .22), rgba(31, 143, 90, .18));
+    color: var(--green);
+    font-size: 17px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+  }
+  .send:disabled { opacity: .45; cursor: not-allowed; }
+  .send:not(:disabled):active { transform: scale(.94); }
+
+  /* ── side drawer ─────────────────────────────────────────────────────── */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .55);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+    z-index: 30;
+  }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+
+  aside {
+    position: fixed;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: min(84vw, 330px);
+    background: var(--bg-soft);
+    border-inline-end: 1px solid var(--line);
+    /* The closed offset is a variable so the RTL rule only has to flip the
+       value — `aside.open` keeps winning on specificity. */
+    --closed-shift: -102%;
+    transform: translateX(var(--closed-shift));
+    transition: transform .22s cubic-bezier(.32, .72, 0, 1);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+  }
+  html[dir="rtl"] aside { --closed-shift: 102%; }
+  aside.open { transform: translateX(0); }
+
+  .drawer-head {
+    padding: 14px 14px 10px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .drawer-title { font-size: 12px; letter-spacing: .1em; color: var(--dim); text-transform: uppercase; }
+
+  .drawer-body { flex: 1; overflow-y: auto; padding: 12px 14px 20px; }
+
+  .service {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 9px;
+    background: var(--panel);
+  }
+  .service-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .service-name { flex: 1; }
+  .service-meta { font-size: 10.5px; color: var(--dim); margin-top: 4px; word-break: break-word; direction: ltr; text-align: right; }
+  .service-meta.bad { color: var(--red); }
+
+  .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 4px; }
+  .cmd {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 8px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    text-align: center;
+  }
+  .cmd:active { background: var(--panel-2); }
+
+  .drawer-section-title {
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 16px 0 7px;
+  }
+
+  .ghost-btn {
+    width: 100%;
+    padding: 9px;
+    border-radius: 10px;
+    border: 1px solid var(--line-bright);
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .ghost-btn.danger { border-color: rgba(255, 93, 115, .4); color: var(--red); }
+
+  /* toast */
+  .toast {
+    position: fixed;
+    inset-inline: 16px;
+    bottom: calc(80px + var(--safe-bottom));
+    background: var(--panel-2);
+    border: 1px solid var(--line-bright);
+    color: var(--text);
+    border-radius: 11px;
+    padding: 9px 12px;
+    font-size: 12px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all .2s ease;
+    pointer-events: none;
+    z-index: 50;
+    text-align: center;
+  }
+  .toast.show { opacity: 1; transform: none; }
+
+  .empty {
+    color: var(--dim);
+    font-size: 12px;
+    padding: 10px 2px;
+  }
+  .empty b { color: var(--green); font-weight: 600; }
+
+  /* wide screens: centre the terminal */
+  @media (min-width: 720px) {
+    body { max-width: 760px; margin: 0 auto; border-inline: 1px solid var(--line); }
+    aside { max-width: 330px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
 </head>
 <body>
-  <div id="terminal">
-    <div class="line system">Welcome to AI Coding Agent v1.1</div>
-    <div class="line system">Type your commands or code requests below.</div>
-    <div class="line">----------------------------------------</div>
+  <header>
+    <button class="icon-btn" id="menu-btn" aria-label="منو">☰</button>
+    <div class="brand">
+      <div class="brand-mark">&gt;_</div>
+      <div class="brand-text">
+        <div class="brand-title">TERMINAL-AI</div>
+        <div class="brand-sub">
+          <span class="dot pulse" id="conn-dot"></span>
+          <span id="conn-text">در حال اتصال…</span>
+        </div>
+      </div>
+    </div>
+    <button class="icon-btn" id="refresh-btn" aria-label="تازه‌سازی">⟳</button>
+  </header>
+
+  <div class="badges" id="badges">
+    <span class="badge" data-svc="github"><span class="dot"></span> GitHub</span>
+    <span class="badge" data-svc="gitlab"><span class="dot"></span> GitLab</span>
+    <span class="badge" data-svc="gdrive"><span class="dot"></span> Drive</span>
+    <span class="badge" data-svc="gemini"><span class="dot"></span> Gemini</span>
   </div>
 
-  <div id="input-area">
-    <div id="prompt-symbol">user@gase99bot:~$</div>
-    <textarea id="command-input" rows="1" placeholder="Write code..." autocomplete="off"></textarea>
-    <button id="send-btn">➤</button>
-  </div>
+  <main id="terminal" role="log" aria-live="polite"></main>
 
-  <script>
-    const tg = window.Telegram.WebApp;
-    tg.ready();
-    tg.expand();
-    tg.setHeaderColor('#0d1117');
+  <footer>
+    <div class="hint">
+      <span id="hint-text">Enter = ارسال · Shift+Enter = خط جدید</span>
+      <span class="counter" id="counter">0</span>
+    </div>
+    <div class="composer">
+      <div class="ps1-mobile" id="ps1-mobile">$</div>
+      <textarea id="input" rows="1" placeholder="مثلاً: یک فایل README برای مخزن من بساز…"
+        autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
+      <button class="send" id="send" aria-label="ارسال">➤</button>
+    </div>
+  </footer>
 
-    const terminal = document.getElementById('terminal');
-    const input = document.getElementById('command-input');
-    const sendBtn = document.getElementById('send-btn');
+  <div class="scrim" id="scrim"></div>
 
-    let isProcessing = false;
+  <aside id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <span class="drawer-title">پنل کنترل</span>
+      <button class="icon-btn" id="close-drawer" aria-label="بستن">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-section-title">اتصال سرویس‌ها</div>
+      <div id="services"></div>
 
-    // ارسال با کلیک روی دکمه
-    sendBtn.addEventListener('click', submitCommand);
+      <div class="drawer-section-title">دستورهای سریع</div>
+      <div class="cmd-grid">
+        <button class="cmd" data-cmd="آخرین کامیت‌های مخزن پیش‌فرض را نشان بده">📜 کامیت‌ها</button>
+        <button class="cmd" data-cmd="فایل‌های مخزن پیش‌فرض را فهرست کن">📂 فایل‌ها</button>
+        <button class="cmd" data-cmd="یک فایل README.md با توضیح پروژه در مخزن پیش‌فرض بساز">📝 README</button>
+        <button class="cmd" data-cmd="وضعیت اجراهای GitHub Actions را نشان بده">⚙️ Actions</button>
+        <button class="cmd" data-cmd="/clear">🧹 پاک کردن</button>
+        <button class="cmd" data-cmd="/status">📡 وضعیت</button>
+      </div>
 
-    // ارسال با زدن Enter (اگر Shift نگه داشته نشده باشد)
-    input.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault(); // جلوگیری از رفتن به خط بعد
-        submitCommand();
+      <div class="drawer-section-title">ابداع</div>
+      <button class="ghost-btn" id="refresh-status">🔄 بررسی مجدد اتصال‌ها</button>
+      <button class="ghost-btn" id="export-btn">⬇️ دانلود تاریخچه (JSON)</button>
+      <button class="ghost-btn danger" id="clear-btn">🗑 پاک کردن کامل تاریخچه</button>
+
+      <div class="drawer-section-title">درباره</div>
+      <div class="service-meta" style="direction: rtl; text-align: right; color: var(--dim); font-size: 11px;">
+        TERMINAL-AI روی Telegram Serverless اجرا می‌شود. کلیدها فقط روی سرور هستند و هرگز به مرورگر فرستاده نمی‌شوند.
+      </div>
+    </div>
+  </aside>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ── environment ───────────────────────────────────────────────────────────
+  const tg = window.Telegram?.WebApp;
+  const hasTelegram = Boolean(tg && tg.initData);
+
+  const el = {
+    terminal: document.getElementById('terminal'),
+    input: document.getElementById('input'),
+    send: document.getElementById('send'),
+    counter: document.getElementById('counter'),
+    connDot: document.getElementById('conn-dot'),
+    connText: document.getElementById('conn-text'),
+    badges: document.getElementById('badges'),
+    services: document.getElementById('services'),
+    drawer: document.getElementById('drawer'),
+    scrim: document.getElementById('scrim'),
+    toast: document.getElementById('toast'),
+    hint: document.getElementById('hint-text'),
+    ps1Mobile: document.getElementById('ps1-mobile'),
+  };
+
+  const state = {
+    busy: false,
+    history: [],
+    status: null,
+    user: null,
+    chatId: null,
+    queue: [],
+    clearing: false,
+    clearingTimer: null,
+  };
+
+  // ── tiny utilities ────────────────────────────────────────────────────────
+  const escapeHtml = (value) =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const toast = (message, ms = 2200) => {
+    el.toast.textContent = message;
+    el.toast.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => el.toast.classList.remove('show'), ms);
+  };
+
+  const haptic = (type, style) => {
+    try {
+      if (!tg?.HapticFeedback) return;
+      if (type === 'impact') tg.HapticFeedback.impactOccurred(style || 'light');
+      else if (type === 'success') tg.HapticFeedback.notificationOccurred('success');
+      else if (type === 'error') tg.HapticFeedback.notificationOccurred('error');
+      else tg.HapticFeedback.selectionChanged();
+    } catch { /* older clients */ }
+  };
+
+  const scrollToEnd = (smooth = true) => {
+    el.terminal.scrollTo({ top: el.terminal.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  };
+
+  const nearBottom = () =>
+    el.terminal.scrollHeight - el.terminal.scrollTop - el.terminal.clientHeight < 120;
+
+  // Western digits keep the timestamp readable next to LTR code and ids;
+  // the wrapper isolates it so RTL text cannot reorder "10:06".
+  const clock = () =>
+    `<span class="stamp">${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>`;
+
+  /** Serverless.call as a promise, with a readable Persian error. */
+  function call(name, input) {
+    return new Promise((resolve, reject) => {
+      if (!tg?.Serverless?.call) {
+        reject(new Error('این نسخه از تلگرام با مینی‌اپ سرورلس سازگار نیست. ربات را در تلگرام دسکتاپ/موبایل به‌روز باز کنید.'));
+        return;
+      }
+      tg.Serverless.call(name, input || {}, (err, result) => {
+        if (err) {
+          const message =
+            err.type === 'UNAUTHORIZED'
+              ? 'نشست تلگرام معتبر نیست؛ مینی‌اپ را دوباره از ربات باز کنید.'
+              : err.message || 'خطای سرور';
+          const error = new Error(message);
+          error.type = err.type;
+          error.status = err.status;
+          reject(error);
+          return;
+        }
+        resolve(result);
+      });
+    });
+  }
+
+  // ── markdown-ish rendering (safe: everything is escaped first) ────────────
+  function renderInline(text) {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`\n]+)`/g, '<span class="inline-code">$1</span>');
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:;])/g, '$1<em>$2</em>');
+    html = html.replace(/\b(https?:\/\/[^\s<]+)/g, (url) => {
+      const clean = url.replace(/[.,;:!?)]+$/, '');
+      const tail = url.slice(clean.length);
+      return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${tail}`;
+    });
+    return html;
+  }
+
+  /** Split the answer into text and fenced code so code keeps its whitespace. */
+  function renderMarkdown(source) {
+    const parts = String(source ?? '').split(/```/);
+    let html = '';
+    parts.forEach((chunk, index) => {
+      if (index % 2 === 1) {
+        const newline = chunk.indexOf('\n');
+        const lang = newline > -1 ? chunk.slice(0, newline).trim().slice(0, 16) : '';
+        const code = newline > -1 ? chunk.slice(newline + 1) : chunk;
+        html += `<pre class="code">${lang ? `<span class="code-lang">${escapeHtml(lang)}</span>` : ''}<button class="copy" type="button">copy</button><code>${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`;
+      } else if (chunk.trim()) {
+        html += `<div>${renderInline(chunk)}</div>`;
       }
     });
+    return html;
+  }
 
-    // بزرگ شدن خودکار کادر تایپ با تایپ کردن
-    input.addEventListener('input', function() {
-      this.style.height = '40px';
-      this.style.height = (this.scrollHeight) + 'px';
-    });
+  // ── terminal rendering ────────────────────────────────────────────────────
+  function appendEntry({ role, content, createdAt, isError = false, isEvent = false }) {
+    const entry = document.createElement('div');
+    entry.className = `entry ${isError ? 'error' : ''} ${isEvent ? 'event' : ''}`;
 
-    function submitCommand() {
-      if (isProcessing) return;
-      const command = input.value.trim();
-      if (!command) return;
-      
-      // ریست کردن کادر تایپ
-      input.value = '';
-      input.style.height = '40px';
-      
-      processCommand(command);
+    if (role === 'user') {
+      entry.innerHTML = `
+        <div class="entry-prompt">
+          <span class="ps1"><span class="path">~</span>$</span>
+          <span><span class="stamp">${currentUser()}</span> · ${clock()}</span>
+        </div>
+        <div class="entry-user-text">${renderInline(content)}</div>`;
+    } else {
+      entry.innerHTML = `
+        <div class="entry-prompt">
+          <span class="ps1">agent</span>
+          <span>${createdAt ? '' : ''}${isEvent ? '' : clock()}</span>
+        </div>
+        ${isEvent ? '' : `<div class="entry-body">${renderMarkdown(content)}</div>`}
+        ${isEvent ? `<div class="entry-body">${renderInline(content)}</div>` : ''}`;
     }
 
-    async function processCommand(cmd) {
-      isProcessing = true;
-      
-      appendLine('<span class="prompt">user@gase99bot:~$</span> <span class="command">' + escapeHtml(cmd) + '</span>');
-      
-      const loadingId = 'loading-' + Date.now();
-      appendLine('<span id="' + loadingId + '" class="system">System is thinking...</span>');
-      
-      let dots = 0;
-      const dotInterval = setInterval(() => {
-        dots = (dots + 1) % 4;
-        const el = document.getElementById(loadingId);
-        if (el) el.innerHTML = 'System is thinking' + '.'.repeat(dots);
-      }, 500);
-
-      tg.Serverless.call('agent', { prompt: cmd }, function (err, data) {
-        clearInterval(dotInterval);
-        
-        const loadingEl = document.getElementById(loadingId);
-        if (loadingEl) loadingEl.remove();
-
-        if (err) {
-          appendLine('<span class="error">Error: ' + escapeHtml(err.message) + '</span>');
-          isProcessing = false;
-        } else {
-          typeOutput(data.output);
+    entry.querySelectorAll('.copy').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const code = button.parentElement.querySelector('code')?.textContent || '';
+        try {
+          await navigator.clipboard.writeText(code);
+          button.textContent = 'ok';
+          haptic('selection');
+          setTimeout(() => { button.textContent = 'copy'; }, 1200);
+        } catch {
+          toast('کپی نشد');
         }
       });
-    }
+    });
 
-    function typeOutput(text) {
-      let i = 0;
-      const line = document.createElement('div');
-      line.className = 'line';
-      terminal.appendChild(line);
-      
-      terminal.scrollTop = terminal.scrollHeight;
+    const stick = nearBottom();
+    el.terminal.appendChild(entry);
+    if (stick) scrollToEnd();
+    return entry;
+  }
 
-      const interval = setInterval(() => {
-        const chunk = text.substring(i, i + 3); // سرعت تایپ
-        line.innerHTML += escapeHtml(chunk).replace(/\n/g, '<br>');
-        i += 3;
-        
-        terminal.scrollTop = terminal.scrollHeight;
+  function currentUser() {
+    return state.user?.username ? `@${state.user.username}` : 'you';
+  }
 
-        if (i >= text.length) {
-          clearInterval(interval);
-          appendLine('<span class="prompt">user@gase99bot:~$</span> <span style="opacity:0.5;">_</span>');
-          isProcessing = false;
+  function appendSystem(text) {
+    return appendEntry({ role: 'assistant', content: text, isEvent: true });
+  }
+
+  function appendError(text) {
+    return appendEntry({ role: 'assistant', content: text, isError: true });
+  }
+
+  function typingEntry() {
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+    entry.innerHTML = `
+      <div class="entry-prompt"><span class="ps1">agent</span><span>${clock()}</span></div>
+      <div class="entry-body"><span class="typing">در حال پردازش<span></span><span></span><span></span></span></div>`;
+    el.terminal.appendChild(entry);
+    scrollToEnd();
+    return entry;
+  }
+
+  function toolLine(label, status) {
+    const line = document.createElement('div');
+    line.className = `tool-line ${status || ''}`;
+    const icon = status === 'ok' ? '✓' : status === 'err' ? '✕' : '⏳';
+    line.innerHTML = `<span class="status">${icon}</span><span>${renderInline(label)}</span>`;
+    const stick = nearBottom();
+    el.terminal.appendChild(line);
+    if (stick) scrollToEnd();
+    return line;
+  }
+
+  function approvalCard(pending) {
+    const wrap = document.createElement('div');
+    wrap.className = 'approval';
+    wrap.innerHTML = `
+      <div class="approval-title">⚠️ این عملیات نیازمند تأیید شماست</div>
+      <div class="approval-label">${escapeHtml(pending.label || pending.action)}</div>
+      ${pending.reason ? `<div class="service-meta" style="direction:rtl;text-align:right;margin-top:6px;">${renderInline(pending.reason)}</div>` : ''}
+      <div class="approval-actions">
+        <button class="primary" data-act="approve">تأیید و اجرا</button>
+        <button class="danger" data-act="reject">لغو</button>
+      </div>`;
+
+    wrap.querySelectorAll('button').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const decision = button.dataset.act === 'approve' ? 'approve' : 'reject';
+        wrap.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        haptic('impact', 'medium');
+        try {
+          const result = await call('approve', { token: pending.token, decision });
+          appendEntry({ role: 'assistant', content: result.output });
+          haptic(decision === 'approve' ? 'success' : 'selection');
+          if (result.action?.url) {
+            appendSystem(`🔗 ${result.action.url}`);
+          }
+          wrap.remove();
+        } catch (err) {
+          appendError(`❌ ${err.message}`);
+          wrap.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+          haptic('error');
         }
-      }, 20);
+      });
+    });
+
+    el.terminal.appendChild(wrap);
+    scrollToEnd();
+    return wrap;
+  }
+
+  // ── status panel ──────────────────────────────────────────────────────────
+  const SERVICE_LABELS = {
+    github: { icon: '🐙', name: 'GitHub' },
+    gitlab: { icon: '🦊', name: 'GitLab' },
+    gdrive: { icon: '📁', name: 'Google Drive' },
+    gemini: { icon: '🤖', name: 'Gemini' },
+  };
+
+  function setBadge(service, connected, detail) {
+    const badge = el.badges.querySelector(`[data-svc="${service}"]`);
+    if (!badge) return;
+    badge.classList.toggle('ok', Boolean(connected));
+    badge.classList.toggle('bad', !connected);
+    const dot = badge.querySelector('.dot');
+    if (dot) dot.className = `dot ${connected ? 'on' : 'off'}`;
+    badge.title = detail || '';
+  }
+
+  function applyStatus(data) {
+    state.status = data;
+    const services = data?.services || {};
+    const geminiOk = Boolean(data?.model?.configured);
+
+    setBadge('github', services.github?.connected, services.github?.reason || services.github?.login);
+    setBadge('gitlab', services.gitlab?.connected, services.gitlab?.reason || services.gitlab?.login);
+    setBadge('gdrive', services.gdrive?.connected, services.gdrive?.reason || services.gdrive?.email);
+    setBadge('gemini', geminiOk, data?.model?.name);
+
+    const connected = ['github', 'gitlab', 'gdrive'].filter((key) => services[key]?.connected).length;
+    el.connDot.className = `dot ${connected > 0 ? 'on' : 'warn'}`;
+    el.connText.textContent = `${connected}/3 سرویس متصل · ${data?.model?.name || 'Gemini'}`;
+
+    renderServicePanel(services, geminiOk, data?.model?.name);
+    (data?.pending || []).forEach((pending) => approvalCard(pending));
+  }
+
+  function renderServicePanel(services, geminiOk, modelName) {
+    const rows = [
+      {
+        key: 'github',
+        detail: services.github?.connected
+          ? `@${services.github.login}${services.github.defaultRepo ? ` · ${services.github.defaultRepo}` : ''}`
+          : services.github?.reason || 'متصل نیست',
+        ok: services.github?.connected,
+      },
+      {
+        key: 'gitlab',
+        detail: services.gitlab?.connected
+          ? `@${services.gitlab.login}${services.gitlab.defaultProject ? ` · ${services.gitlab.defaultProject}` : ''}`
+          : services.gitlab?.reason || 'متصل نیست',
+        ok: services.gitlab?.connected,
+      },
+      {
+        key: 'gdrive',
+        detail: services.gdrive?.connected
+          ? `${services.gdrive.email}${services.gdrive.folder ? ` · ${services.gdrive.folder.name}` : ''}`
+          : services.gdrive?.reason || 'متصل نیست',
+        ok: services.gdrive?.connected,
+      },
+      {
+        key: 'gemini',
+        detail: geminiOk ? `مدل: ${modelName || 'تنظیم‌شده'}` : 'کلید API تنظیم نشده',
+        ok: geminiOk,
+      },
+    ];
+
+    el.services.innerHTML = rows
+      .map(({ key, detail, ok }) => {
+        const meta = SERVICE_LABELS[key];
+        return `
+          <div class="service">
+            <div class="service-head">
+              <span class="dot ${ok ? 'on' : 'off'}"></span>
+              <span class="service-name">${meta.icon} ${meta.name}</span>
+              <span class="service-meta" style="direction:rtl;text-align:left;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? 'متصل' : 'قطع'}</span>
+            </div>
+            <div class="service-meta ${ok ? '' : 'bad'}">${escapeHtml(detail)}</div>
+          </div>`;
+      })
+      .join('');
+  }
+
+  async function refreshStatus(announce = false) {
+    if (!hasTelegram) {
+      el.connDot.className = 'dot off';
+      el.connText.textContent = 'خارج از تلگرام';
+      return;
+    }
+    try {
+      const data = await call('getStatus', {});
+      applyStatus(data);
+      if (announce) toast('وضعیت به‌روز شد');
+    } catch (err) {
+      el.connDot.className = 'dot off';
+      el.connText.textContent = 'عدم دسترسی به سرور';
+      setBadge('github', false);
+      setBadge('gitlab', false);
+      setBadge('gdrive', false);
+      setBadge('gemini', false);
+      if (announce) toast(err.message);
+    }
+  }
+
+  // ── history ───────────────────────────────────────────────────────────────
+  async function loadHistory() {
+    if (!hasTelegram) {
+      appendSystem('خارج از تلگرام اجرا می‌شود — برای استفاده، مینی‌اپ را از ربات باز کنید.');
+      return;
+    }
+    try {
+      const data = await call('getHistory', { limit: 40 });
+      state.chatId = data.chatId || null;
+      state.user = data.user || null;
+      if (state.user?.username) el.ps1Mobile.textContent = `@${state.user.username}:~$`;
+      el.terminal.innerHTML = '';
+      if (!data.messages?.length) {
+        renderWelcome();
+        return;
+      }
+      data.messages.forEach((message) =>
+        appendEntry({ role: message.role, content: message.content, createdAt: message.createdAt })
+      );
+      if (data.hasMore) {
+        appendSystem(`… ${data.total - data.messages.length} پیام قدیمی‌تر در سرور ذخیره است.`);
+      }
+      scrollToEnd(false);
+    } catch (err) {
+      el.terminal.innerHTML = '';
+      appendError(`بارگذاری تاریخچه ناموفق بود: ${err.message}`);
+    }
+  }
+
+  function renderWelcome() {
+    el.terminal.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'empty';
+    box.innerHTML = `
+      <div style="color:var(--green);font-size:15px;margin-bottom:8px;">&gt;_ TERMINAL-AI v2</div>
+      <div>سلام <b>${escapeHtml(state.user?.name || 'کاربر')}</b> 👋</div>
+      <div style="margin-top:8px;">مثال‌هایی که می‌توانید بفرستید:</div>
+      <div style="margin-top:6px;line-height:1.9;">
+        • «یک فایل README برای مخزن پیش‌فرض بساز»<br>
+        • «آخرین ۵ کامیت را نشان بده»<br>
+        • «یک اسکریپت پایتون بنویس که فایل‌ها را مرتب کند»<br>
+        • «این متن را در گوگل‌درایو آپلود کن»
+      </div>`;
+    el.terminal.appendChild(box);
+  }
+
+  // ── sending ───────────────────────────────────────────────────────────────
+  async function sendCommand(raw) {
+    const prompt = String(raw ?? '').trim();
+    if (!prompt) return;
+    if (state.busy) {
+      // Never drop a message: queue it and send it after the current turn.
+      state.queue.push(prompt);
+      appendSystem(`⏳ در صف ارسال: ${prompt.slice(0, 60)}${prompt.length > 60 ? '…' : ''}`);
+      setComposerState();
+      toast('در صف قرار گرفت');
+      return;
     }
 
-    function appendLine(html) {
-      const div = document.createElement('div');
-      div.className = 'line';
-      div.innerHTML = html;
-      terminal.appendChild(div);
-      terminal.scrollTop = terminal.scrollHeight;
+    if (!hasTelegram) {
+      toast('این مینی‌اپ فقط داخل تلگرام کار می‌کند');
+      return;
     }
 
-    function escapeHtml(unsafe) {
-      return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+    // local commands
+    if (prompt === '/clear' || prompt === 'clear') {
+      await clearHistory();
+      return;
     }
-  </script>
+    if (prompt === '/status') {
+      await refreshStatus(true);
+      appendSystem('وضعیت اتصال‌ها به‌روز شد.');
+      return;
+    }
+    if (prompt === '/help') {
+      renderWelcome();
+      return;
+    }
+
+    state.busy = true;
+    setComposerState();
+    haptic('impact');
+
+    appendEntry({ role: 'user', content: prompt });
+    const pendingEntry = typingEntry();
+
+    try {
+      const result = await call('agent', { prompt, chatId: state.chatId });
+      pendingEntry.remove();
+
+      // tool events first, then the answer
+      (result.actions || []).forEach((action) => {
+        toolLine(action.label || `${action.service}.${action.action}`, action.ok ? 'ok' : 'err');
+        if (!action.ok && action.error) appendSystem(`↳ ${action.error}`);
+      });
+
+      appendEntry({ role: 'assistant', content: result.output || '(بدون پاسخ)' });
+      (result.pending || []).forEach((pending) => approvalCard(pending));
+
+      haptic('success');
+      if (result.usage?.totalTokenCount) {
+        appendSystem(`tokens: ${result.usage.totalTokenCount} · model: ${result.model || 'gemini'}`);
+      }
+    } catch (err) {
+      pendingEntry.remove();
+      appendError(`❌ ${err.message}`);
+      haptic('error');
+    } finally {
+      state.busy = false;
+      const next = state.queue.shift();
+      setComposerState();
+      if (next) {
+        // A short beat lets the browser paint the finished answer first.
+        setTimeout(() => sendCommand(next), 120);
+      } else {
+        scrollToEnd();
+      }
+    }
+  }
+
+  async function clearHistory() {
+    if (state.clearing) {
+      // Second tap within the window: really clear.
+      state.clearing = false;
+      clearTimeout(state.clearingTimer);
+      try {
+        await call('clearHistory', { confirm: true });
+        renderWelcome();
+        toast('تاریخچه پاک شد');
+        haptic('success');
+      } catch (err) {
+        appendError(`❌ ${err.message}`);
+      }
+      return;
+    }
+
+    // Two-step confirmation in the terminal itself: works in every client
+    // (window.confirm is blocked inside Telegram's iframe).
+    state.clearing = true;
+    appendSystem('🗑 برای پاک کردن تاریخچه، دوباره «/clear» را بفرستید یا دکمه را بزنید (۱۵ ثانیه).');
+    toast('تأیید لازم است: دوباره بزنید');
+    state.clearingTimer = setTimeout(() => {
+      state.clearing = false;
+      appendSystem('لغو شد؛ تاریخچه دست‌نخورده ماند.');
+    }, 15000);
+  }
+
+  function setComposerState() {
+    // The input stays usable while the agent works: anything typed is queued
+    // and sent as soon as the current turn finishes.
+    el.send.disabled = false;
+    el.input.disabled = false;
+    el.send.textContent = state.busy ? '⏳' : '➤';
+    el.hint.textContent = state.busy
+      ? `ایجنت در حال کار است…${state.queue.length ? ` (${state.queue.length} در صف)` : ''}`
+      : 'Enter = ارسال · Shift+Enter = خط جدید';
+  }
+
+  // ── composer behaviour ────────────────────────────────────────────────────
+  function autoGrow() {
+    el.input.style.height = 'auto';
+    el.input.style.height = `${Math.min(el.input.scrollHeight, 132)}px`;
+    el.counter.textContent = String(el.input.value.length);
+    el.counter.classList.toggle('over', el.input.value.length > 7500);
+  }
+
+  el.input.addEventListener('input', autoGrow);
+  el.input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  });
+  el.send.addEventListener('click', submit);
+
+  function submit() {
+    const value = el.input.value;
+    if (!value.trim()) return;
+    el.input.value = '';
+    autoGrow();
+    sendCommand(value);
+  }
+
+  // ── drawer ────────────────────────────────────────────────────────────────
+  const openDrawer = () => {
+    el.drawer.classList.add('open');
+    el.scrim.classList.add('open');
+    el.drawer.setAttribute('aria-hidden', 'false');
+    haptic('selection');
+  };
+  const closeDrawer = () => {
+    el.drawer.classList.remove('open');
+    el.scrim.classList.remove('open');
+    el.drawer.setAttribute('aria-hidden', 'true');
+  };
+
+  document.getElementById('menu-btn').addEventListener('click', openDrawer);
+  document.getElementById('close-drawer').addEventListener('click', closeDrawer);
+  el.scrim.addEventListener('click', closeDrawer);
+  document.getElementById('refresh-btn').addEventListener('click', () => refreshStatus(true));
+  document.getElementById('refresh-status').addEventListener('click', () => refreshStatus(true));
+  el.badges.addEventListener('click', (event) => {
+    const badge = event.target.closest('.badge');
+    if (!badge) return;
+    const service = badge.dataset.svc;
+    const info = state.status?.services?.[service] || (service === 'gemini' ? state.status?.model : null);
+    if (!info) return toast('هنوز وضعیتی دریافت نشده');
+    toast(info.connected ?? info.configured ? `${service}: متصل` : `${service}: ${info.reason || 'قطع'}`);
+  });
+
+  document.querySelectorAll('.cmd').forEach((button) => {
+    button.addEventListener('click', () => {
+      closeDrawer();
+      sendCommand(button.dataset.cmd);
+    });
+  });
+
+  document.getElementById('clear-btn').addEventListener('click', () => {
+    closeDrawer();
+    clearHistory();
+  });
+
+  document.getElementById('export-btn').addEventListener('click', async () => {
+    try {
+      const data = await call('getHistory', { limit: 100 });
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `terminal-ai-history-${Date.now()}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast('تاریخچه دانلود شد');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  // ── Telegram lifecycle ────────────────────────────────────────────────────
+  function initTelegram() {
+    if (!tg) return;
+    try {
+      tg.ready();
+      tg.expand();
+      if (typeof tg.disableVerticalSwipes === 'function') tg.disableVerticalSwipes();
+      if (typeof tg.setHeaderColor === 'function') tg.setHeaderColor('#0d151b');
+      if (typeof tg.setBackgroundColor === 'function') tg.setBackgroundColor('#05080a');
+      if (typeof tg.setBottomBarColor === 'function') tg.setBottomBarColor('#05080a');
+      tg.requestFullscreen?.();
+    } catch { /* older clients */ }
+
+    // The viewport shrinks when the keyboard opens. Follow the *live* height
+    // (`viewportHeight`, not the stable one) so the composer rides above the
+    // keyboard instead of hiding behind it.
+    const syncViewport = () => {
+      const winHeight = window.innerHeight || 0;
+      const reported = tg.viewportHeight || tg.viewportStableHeight || 0;
+      // Use the smaller of the two: a stale/oversized report would otherwise
+      // push the composer below the fold.
+      const candidates = [reported, winHeight].filter((value) => value > 0);
+      if (!candidates.length) return;
+      const height = Math.min(...candidates);
+      document.documentElement.style.setProperty('--tg-viewport-height', `${height}px`);
+      document.body.style.height = `${height}px`;
+      scrollToEnd();
+    };
+    tg.onEvent?.('viewportChanged', syncViewport);
+    tg.onEvent?.('themeChanged', () => {
+      document.body.style.background = '#05080a';
+    });
+    syncViewport();
+
+    const user = tg.initDataUnsafe?.user;
+    if (user) {
+      state.user = {
+        name: [user.first_name, user.last_name].filter(Boolean).join(' '),
+        username: user.username || null,
+      };
+      if (user.username) el.ps1Mobile.textContent = `@${user.username}:~$`;
+    }
+  }
+
+  // ── boot ──────────────────────────────────────────────────────────────────
+  async function boot() {
+    initTelegram();
+    autoGrow();
+    setComposerState();
+    await loadHistory();
+    refreshStatus(false);
+    el.input.focus?.();
+  }
+
+  boot();
+})();
+</script>
 </body>
 </html>

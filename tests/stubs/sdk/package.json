@@ -1,0 +1,13 @@
+{
+  "name": "sdk",
+  "version": "0.0.0-test",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./db": "./index.js",
+    "./api": "./index.js",
+    "./fetch": "./index.js",
+    "./console": "./index.js"
+  }
+}
