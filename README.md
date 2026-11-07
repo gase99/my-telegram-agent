@@ -39,7 +39,7 @@ tgcloud/
   lib/
     config.example.js         template — copy to config.js
     settings.js               single reader of config.js, with defaults
-    ai.js                     Gemini/Grok/DeepSeek transport + failover + agent loop
+    ai.js                     Gemini/Grok/DeepSeek/Kimi transport + failover + agent loop
     prompt.js                 system prompt + action protocol + action catalog
     actions.js                whitelist + executor (the trust boundary)
     github.js  gitlab.js  gdrive.js
@@ -161,9 +161,10 @@ Open it from the bot. It provides:
 
 - a scrolling terminal with markdown-ish rendering, syntax-tinted code blocks and copy buttons
 - a typing indicator while the agent works, plus one line per executed operation
-- connection badges (GitHub / GitLab / Drive) that probe the real APIs, plus live **AI provider badges** (Gemini · Grok · DeepSeek): green for the model that answered the last request, red for the ones that failed over, faded when no key is configured
+- connection badges (GitHub / GitLab / Drive) that probe the real APIs, plus live **AI provider badges** (Gemini · Grok · DeepSeek · Kimi): green for the model that answered the last request, red for the ones that failed over, faded when no key is configured
+- a three-second dark splash screen with an animated AI star, model-name sequence and progress bar; it fades even when the backend is unavailable
 - approval cards for destructive actions, a quick-command panel, JSON history export
-- safe-area handling, keyboard-aware layout, haptics, and a message queue so nothing typed is lost
+- Telegram/device safe-area handling, `100dvh` + live `visualViewport` keyboard-aware layout, LTR-isolated code, haptics, and a message queue so nothing typed is lost
 
 The page talks to the backend only through `Telegram.WebApp.Serverless.call(...)`,
 which sends the verified init data; the Mini App never sees a token or key.
@@ -171,13 +172,16 @@ which sends the verified init data; the Mini App never sees a token or key.
 ## Tests
 
 ```bash
-npm test        # 43 tests, offline: links tests/stubs/sdk and runs node:test
+npm test        # offline: links tests/stubs/sdk and runs node:test
 ```
 
 The suite covers base64/UTF-8 round-trips, SHA-256 and RSA vectors, the action
 parser, the approval token lifecycle, secret redaction, conversation storage,
 and the GitHub/GitLab/Drive clients against a mocked HTTP layer — verifying that
-tokens travel in headers and never in URLs or error messages.
+tokens travel in headers and never in URLs or error messages. Whole-project
+checks also import every runtime module with the offline SDK stub, reject npm or
+Node built-in imports under `tgcloud/`, parse the Mini App's inline JavaScript,
+and cover the splash, safe-area/keyboard layout, LTR code and provider badges.
 
 ## Endpoints
 
