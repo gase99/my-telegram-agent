@@ -18,30 +18,39 @@
 
 // Google Gemini — https://aistudio.google.com/apikey
 // Endpoint: {GEMINI_BASE_URL}/models/{GEMINI_MODEL}:generateContent
+// `gemini-3.5-flash` is a stable generation; newer ids (e.g. gemini-3.6-flash)
+// also work — only the model string has to change.
 export const GEMINI_API_KEY = '';
 export const GEMINI_MODEL = 'gemini-3.5-flash';
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // xAI Grok (OpenAI compatible) — https://console.x.ai
 // Endpoint: {XAI_BASE_URL}/chat/completions  (Authorization: Bearer <key>)
-// The default is xAI's fast non-reasoning model; swap it for another id from
-// https://docs.x.ai/docs/models if your account does not have it.
+// xAI retired the `grok-4-fast-*` ids in 2026; `grok-4.3` is the current
+// general model. Check https://docs.x.ai/developers/models before changing it.
 export const XAI_API_KEY = '';
-export const XAI_MODEL = 'grok-4-fast-non-reasoning';
+export const XAI_MODEL = 'grok-4.3';
 export const XAI_BASE_URL = 'https://api.x.ai/v1';
 
 // DeepSeek (OpenAI compatible) — https://platform.deepseek.com/api_keys
 // Endpoint: {DEEPSEEK_BASE_URL}/chat/completions  (Authorization: Bearer <key>)
-// `deepseek-chat` is the general model; `deepseek-reasoner` is slower and
-// often exceeds the 15s provider timeout, so it is a poor failover target.
+// DeepSeek retired `deepseek-chat` / `deepseek-reasoner` in July 2026; the
+// current id is `deepseek-flash` (alias for the V4.1 Flash model). V4 thinks by
+// default, so the adapter asks for a non-thinking answer: a failover hop has to
+// fit inside AI_TIMEOUT_MS.
 export const DEEPSEEK_API_KEY = '';
-export const DEEPSEEK_MODEL = 'deepseek-chat';
+export const DEEPSEEK_MODEL = 'deepseek-flash';
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 // Which provider answers first. Names: 'gemini' | 'grok' | 'deepseek'
 // ('xai' is accepted as an alias for 'grok'). Unknown names are ignored and
 // providers without a key are skipped without counting as a failure.
 export const AI_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek'];
+// Gemini 3+ replaced the numeric thinking budget with a discrete level:
+// 'minimal' | 'low' | 'medium' | 'high'. 'low' keeps an agent turn inside the
+// 15s provider deadline while still planning multi-step work. Older Gemini
+// models ignore this and keep their numeric budget.
+export const AI_THINKING_LEVEL = 'low';
 // Per-provider deadline. A provider that hangs is aborted and the next one is
 // tried. Keep this well under the platform's endpoint limit (the agent turn
 // itself is capped at 42s and shares this budget across the chain).

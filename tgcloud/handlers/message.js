@@ -50,9 +50,11 @@ export default async function (msg, ctx) {
     return;
   }
 
-  await addMessage({ userId, chatRef: chat.id, chatId, role: 'user', content: text });
+  // Read the history *before* storing the new message: `runAgent` receives the
+  // prompt separately, so storing it first would send the same turn twice.
+  const history = await recentMessages({ userId, chatRef: chat.id, limit: settings.maxHistory - 1 });
 
-  const history = await recentMessages({ userId, chatRef: chat.id, limit: settings.maxHistory });
+  await addMessage({ userId, chatRef: chat.id, chatId, role: 'user', content: text });
 
   let typing = startTyping(chatId);
   let result;
@@ -105,7 +107,11 @@ async function handleCommand({ chatId, userId, text }) {
     const aiLines = ai.map((provider) => {
       const icon = provider.configured ? '🟢' : '🔴';
       const model = provider.configured ? `مدل: ${provider.model}` : 'کلید تنظیم نشده';
-      return `${icon} ${provider.emoji} ${provider.label} — ${model}`;
+      // A retired model id still looks configured, but answers 404.
+      const stale = provider.retiredModel
+        ? `\n   ⚠️ این مدل بازنشسته شده؛ به‌جای آن ${provider.suggestedModel} بگذارید.`
+        : '';
+      return `${icon} ${provider.emoji} ${provider.label} — ${model}${stale}`;
     });
     // The order in parentheses is the failover chain.
     const order = ai.map((provider) => provider.label).join(' → ');
@@ -253,9 +259,11 @@ async function sendSafe(chatId, text, { replyMarkup } = {}) {
 function describeFallback(result) {
   const used = result?.provider;
   if (!used) return '';
+  // One turn can have several model round-trips, so a provider may fail more
+  // than once; report each name once.
   const failed = (result.attempts || []).filter((attempt) => !attempt.ok && !attempt.skipped);
   if (!failed.length) return '';
-  const labels = failed.map((attempt) => attempt.label).join(', ');
+  const labels = [...new Set(failed.map((attempt) => attempt.label))].join(', ');
   return `🔁 پاسخ از ${result.providerLabel || used} آمد (${labels} پاسخ نداد).`;
 }
 

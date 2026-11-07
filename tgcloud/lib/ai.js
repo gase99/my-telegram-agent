@@ -34,6 +34,7 @@ import {
   settings,
   providerKey,
   providerModel,
+  retiredModels,
   AI_PROVIDERS,
 } from './settings.js';
 
@@ -129,16 +130,22 @@ export function toGeminiRequest(messages, systemPrompt = '', options = {}) {
 
   const model = options.model || settings.geminiModel;
   const instructions = [asText(systemPrompt), system].filter(Boolean).join('\n\n');
-  const body = {
-    contents,
-    generationConfig: {
-      temperature: options.temperature ?? settings.aiTemperature,
-      maxOutputTokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
-      // 3.x flash models are thinking models: without a budget they can return
-      // only reasoning tokens and an empty text part.
-      ...(isThinkingModel(model) ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET } } : {}),
-    },
+  const generationConfig = {
+    maxOutputTokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
   };
+  // Gemini 3+ deprecated numeric thinking budgets (`thinkingBudget`) in favour
+  // of the discrete `thinkingLevel`; sending a budget to a 3.x/4.x model can
+  // answer 400 INVALID_ARGUMENT. Gemini 2.5 and earlier only understand
+  // `thinkingBudget`, so each family gets its own knob, and neither is sent
+  // when the model is unknown to us.
+  const thinking = thinkingConfigFor(model, options.thinkingLevel ?? settings.aiThinkingLevel);
+  if (thinking) generationConfig.thinkingConfig = thinking;
+  // Custom sampling made no sense for thinking models and is being rejected by
+  // Gemini 3.6+; only send it where the call still honours it.
+  if (acceptsSamplingParams(model) && (options.temperature ?? settings.aiTemperature) != null) {
+    generationConfig.temperature = options.temperature ?? settings.aiTemperature;
+  }
+  const body = { contents, generationConfig };
   if (instructions) body.systemInstruction = { parts: [{ text: instructions }] };
 
   return {
@@ -171,8 +178,18 @@ export function toOpenAIRequest(messages, systemPrompt = '', options = {}) {
       stream: false,
       temperature: options.temperature ?? settings.aiTemperature,
       max_tokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
+      // DeepSeek V4 defaults to *thinking* mode, which is both slower than the
+      // 15s failover deadline and billed as output. The chain is a latency
+      // fallback, so it explicitly asks for the non-thinking answer. `xai`
+      // models treat unknown fields as errors, so this is DeepSeek-only.
+      ...(options.thinking === false && isDeepSeekModel(model) ? { thinking: { type: 'disabled' } } : {}),
     },
   };
+}
+
+/** DeepSeek's OpenAI-compatible models (`deepseek-flash`, `deepseek-v4-pro`, …). */
+function isDeepSeekModel(model) {
+  return /^deepseek/i.test(String(model || ''));
 }
 
 /** Gemini response → neutral result. */
@@ -232,8 +249,51 @@ export function parseOpenAIResponse(data, provider = 'openai') {
   };
 }
 
-function isThinkingModel(model) {
-  return /gemini-(2\.5|[3-9])/.test(String(model));
+/**
+ * Gemini thinking controls. Two incompatible APIs exist:
+ *   • Gemini 3 and later — `thinkingConfig.thinkingLevel` ('low' | 'high'; the
+ *     newer models also accept 'minimal' / 'medium'). `thinkingBudget` is
+ *     deprecated and can answer 400 INVALID_ARGUMENT.
+ *   • Gemini 2.5 and earlier — `thinkingConfig.thinkingBudget` (a number).
+ * Sending the wrong one to the wrong family is an error, so we only send a
+ * knob when we can tell which family the model belongs to.
+ * @returns {object|null} the `thinkingConfig` object, or null to send none.
+ */
+export function thinkingConfigFor(model, level = 'low') {
+  const id = String(model || '').toLowerCase();
+  const major = geminiMajor(id);
+  if (major === null) return null;
+  if (major >= 3) return { thinkingLevel: normaliseThinkingLevel(level) };
+  if (major === 2 && /2\.[5-9]/.test(id)) return { thinkingBudget: THINKING_BUDGET };
+  return null; // 1.x / 2.0 have no thinking config at all
+}
+
+const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
+
+function normaliseThinkingLevel(level) {
+  const value = String(level ?? '').toLowerCase().trim();
+  return THINKING_LEVELS.has(value) ? value : 'low';
+}
+
+/** `gemini-3.5-flash` → 3, `gemini-2.5-flash` → 2, unknown → null. */
+function geminiMajor(model) {
+  const match = /gemini-(\d+)(?:[.-](\d+))?/.exec(String(model || ''));
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Gemini 3.6+ server-defaults temperature/topP/topK and errors on custom
+ * values; older families still accept them.
+ */
+function acceptsSamplingParams(model) {
+  const major = geminiMajor(model);
+  if (major === null) return true;
+  if (major >= 4) return false;
+  if (major === 3) {
+    const minor = Number(/gemini-3[.-](\d+)/.exec(String(model).toLowerCase())?.[1] ?? 0);
+    return minor < 6;
+  }
+  return true;
 }
 
 // ── provider registry ───────────────────────────────────────────────────────
@@ -270,6 +330,8 @@ const PROVIDERS = {
         ...options,
         apiKey: options.apiKey ?? settings.deepseekApiKey,
         baseUrl: settings.deepseekBaseUrl,
+        // V4 thinks by default; a failover hop must answer inside its deadline.
+        thinking: false,
       }),
     parse: (data) => parseOpenAIResponse(data, 'deepseek'),
   },
@@ -291,13 +353,20 @@ export function fallbackOrder(order = settings.aiFallbackOrder) {
 
 /** Everything the status bar needs to draw the model badges. */
 export function providerCatalog() {
-  return fallbackOrder().map((name) => ({
-    name,
-    label: PROVIDERS[name].label,
-    emoji: PROVIDERS[name].emoji,
-    model: providerModel(name),
-    configured: Boolean(providerKey(name)),
-  }));
+  // A retired id answers 404 mid-conversation; say so up front instead.
+  const retired = new Map(retiredModels().map((item) => [item.provider, item]));
+  return fallbackOrder().map((name) => {
+    const stale = retired.get(name);
+    return {
+      name,
+      label: PROVIDERS[name].label,
+      emoji: PROVIDERS[name].emoji,
+      model: providerModel(name),
+      configured: Boolean(providerKey(name)),
+      retiredModel: Boolean(stale),
+      suggestedModel: stale ? stale.replacement : '',
+    };
+  });
 }
 
 /**
@@ -769,11 +838,19 @@ export async function runAgent({
   let modelResult = await generate(turns, { system: SYSTEM_PROMPT, deadline });
   attempts.push(...(modelResult.attempts || []));
   let finalText = modelResult.text;
+  // Set when work ran but no model narrated it, so the reply is built from the
+  // tool results instead of leaking the raw `[نتیجه اجرای عملیات]` payload.
+  let narration = null;
 
   for (let step = 0; step < maxSteps; step++) {
     const requested = parseActions(finalText);
     if (!requested.length) break;
-    if (timeLeft() < MIN_STEP_MS) break;
+    if (timeLeft() < MIN_STEP_MS) {
+      // The model asked for work we have no time to run: say so, and keep any
+      // action list out of the reply.
+      narration = `⏱ زمان این نوبت تمام شد و ${requested.length} عملیات درخواستی اجرا نشد. دوباره بفرستید یا دامنه کار را کوچک‌تر کنید.`;
+      break;
+    }
 
     const results = [];
     for (const action of requested.slice(0, MAX_ACTIONS)) {
@@ -812,24 +889,89 @@ export async function runAgent({
     turns.push({ role: 'model', text: finalText });
     turns.push({ role: 'user', text: SUMMARY_INSTRUCTION });
 
-    if (timeLeft() < MIN_STEP_MS) break;
-    modelResult = await generate(turns, { system: SYSTEM_PROMPT, deadline });
-    attempts.push(...(modelResult.attempts || []));
-    finalText = modelResult.text;
+    // Out of time for another round-trip: keep an answer the user can act on
+    // instead of the tool payload or a bare "I'll do it" preamble.
+    if (timeLeft() < MIN_STEP_MS) {
+      narration = fallbackSummary('', events, pending, '⏱ زمان نوبت پیش از خلاصه‌سازی تمام شد.');
+      break;
+    }
+    const summary = await generate(turns, { system: SYSTEM_PROMPT, deadline }).catch((err) => {
+      // The work already happened. A dead provider chain must not turn a
+      // successful GitHub/Drive operation into an error for the user, so the
+      // results are reported directly instead of failing the whole turn.
+      // The per-provider detail is already in the log; the user gets one line.
+      console.warn(`[ai] summary step failed: ${redactSecrets(err?.message || String(err))}`);
+      narration = fallbackSummary('', events, pending, '⚠️ خلاصه‌سازی با مدل ممکن نشد؛ نتیجه عملیات:');
+      return null;
+    });
+    if (!summary) break;
+    attempts.push(...(summary.attempts || []));
+    modelResult = summary;
+    finalText = summary.text;
+  }
+
+  // A step limit (`MAX_AGENT_STEPS`) can end the loop with results the model
+  // never narrated. Replace that payload with a summary of what really happened.
+  if (!narration && events.length) {
+    const prose = stripActionBlocks(finalText);
+    if (!prose || /\[نتیجه اجرای عملیات\]/.test(finalText) || parseActions(finalText).length) {
+      narration = fallbackSummary('', events, pending);
+    }
   }
 
   return {
-    reply: stripActionBlocks(finalText),
+    reply: narration || stripActionBlocks(finalText),
     raw: finalText,
     actions: events,
     pending,
-    model: modelResult.model,
-    usage: modelResult.usage,
+    model: modelResult?.model || null,
+    usage: modelResult?.usage || null,
     // Which provider wrote the last answer, and every attempt of this turn.
-    provider: modelResult.provider || null,
-    providerLabel: modelResult.providerLabel || null,
+    provider: modelResult?.provider || null,
+    providerLabel: modelResult?.providerLabel || null,
     attempts,
+    // True when the reply was built from tool results (the model never narrated).
+    fallback: Boolean(narration),
   };
+}
+
+/**
+ * The turn ran out of wall-clock budget before the model could narrate its
+ * tool results. Build the answer from the results themselves so an executed
+ * action (create file, open PR, …) is never reported as a bare "ok, doing it".
+ */
+function fallbackSummary(text, events, pending, note = '') {
+  const prose = stripActionBlocks(text);
+  const lines = note ? [note] : [];
+  for (const event of events || []) {
+    const ok = event.ok ? '✅' : '❌';
+    const label = event.label || `${event.service}.${event.action}`;
+    const detail = event.ok
+      ? toolDetail(event)
+      : redactSecrets(event.error || 'خطای نامشخص');
+    lines.push(`${ok} ${label}${detail ? ` — ${detail}` : ''}`);
+  }
+  for (const item of pending || []) {
+    lines.push(`⏳ ${item.label} — منتظر تأیید شما در مینی‌اپ`);
+  }
+  if (!lines.length) return prose;
+  return [prose, lines.join('\n')].filter(Boolean).join('\n\n');
+}
+
+/** One short human line from a tool result (links and ids first). */
+function toolDetail(event) {
+  const data = event.data || event.summary || null;
+  if (!data || typeof data !== 'object') return typeof data === 'string' ? truncate(data, 160) : '';
+  const bits = [];
+  if (data.url || data.html_url) bits.push(`🔗 ${data.url || data.html_url}`);
+  if (data.path || data.name) bits.push(String(data.path || data.name));
+  if (typeof data.content === 'string' && data.content) bits.push(`${data.content.length} کاراکتر`);
+  if (Array.isArray(data.entries)) bits.push(`${data.entries.length} مورد`);
+  if (Array.isArray(data.items)) bits.push(`${data.items.length} مورد`);
+  if (data.branch) bits.push(`شاخه: ${data.branch}`);
+  if (data.number) bits.push(`#${data.number}`);
+  if (data.commit) bits.push(`commit: ${String(data.commit).slice(0, 7)}`);
+  return truncate(bits.join(' • '), 200);
 }
 
 /** Never store a whole file body in the audit log. */

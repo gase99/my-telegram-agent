@@ -605,7 +605,10 @@ test('prompt adapters build the documented request shapes', () => {
   assert.deepEqual(gemini.body.contents.map((c) => c.role), ['user', 'model']);
   assert.deepEqual(gemini.body.contents[0].parts, [{ text: 'hi\n\nagain' }]);
   assert.equal(gemini.body.systemInstruction.parts[0].text, 'SYS\n\nsys');
-  assert.equal(gemini.body.generationConfig.thinkingConfig.thinkingBudget, 0);
+  // Gemini 3+ uses a discrete level; numeric `thinkingBudget` is deprecated and
+  // can answer 400 INVALID_ARGUMENT, so it must not be sent to a 3.x model.
+  assert.deepEqual(gemini.body.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  assert.equal(gemini.body.generationConfig.thinkingBudget, undefined);
 
   const openai = toOpenAIRequest(messages, 'SYS', {
     model: 'deepseek-chat',
@@ -762,4 +765,257 @@ test('the agent endpoint surfaces the failed chain when every provider fails', a
       }
     }
   );
+});
+
+// ── regressions found while re-testing the failover merge ───────────────────
+
+test('the current prompt is sent to the model exactly once', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: '' }, async () => {
+    const bodies = [];
+    __setFetchMock(async (url, init = {}) => {
+      bodies.push(JSON.parse(init.body || '{}'));
+      return jsonResponse({ candidates: [{ content: { parts: [{ text: 'باشه' }] }, finishReason: 'STOP' }] });
+    });
+    try {
+      await messageHandler({ chat: { id: 99 }, from: { id: 7 }, text: 'سلام دنیا' }, { update: {} });
+      const turns = bodies[0].contents;
+      assert.equal(turns.length, 1, 'one turn, not the same prompt twice');
+      assert.equal(turns[0].parts[0].text, 'سلام دنیا');
+
+      bodies.length = 0;
+      await agentEndpoint({ prompt: 'دوم' }, ctxFor({ id: 7 }));
+      const second = bodies[0].contents;
+      assert.equal(second[second.length - 1].parts[0].text, 'دوم');
+      assert.ok(
+        !second.some((turn) => turn.parts[0].text.includes('دوم\n\nدوم')),
+        'the new prompt is not duplicated as history + prompt'
+      );
+    } finally {
+      __setFetchMock(null);
+    }
+  });
+});
+
+test('an executed action is still reported when the summary call fails', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: '' }, async () => {
+    let call = 0;
+    __setFetchMock(async () => {
+      call += 1;
+      if (call === 1) {
+        return jsonResponse({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: 'دارم می‌سازم…\n```action\n{"service":"gdrive","action":"create_folder","params":{"name":"demo"}}\n```',
+                  },
+                ],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+        });
+      }
+      throw new Error('network down');
+    });
+    const originalAccount = settings.googleServiceAccount;
+    settings.googleServiceAccount = null;
+    try {
+      const result = await runAgent({ userId: 9, history: [], prompt: 'پوشه بساز' });
+      // The action ran (and failed, because no service account is set): the
+      // reply must say so instead of pretending the turn never happened.
+      assert.equal(result.actions.length, 1);
+      assert.match(result.reply, /create_folder|پوشه|GOOGLE_SERVICE_ACCOUNT|❌/);
+      assert.equal(result.fallback, true, 'the reply is built from the tool result');
+      assert.match(result.reply, /خلاصه‌سازی/, 'the failed narration is stated');
+      assert.doesNotMatch(result.reply, /\[نتیجه اجرای عملیات\]/, 'no raw payload leaks');
+    } finally {
+      settings.googleServiceAccount = originalAccount;
+      __setFetchMock(null);
+    }
+  });
+});
+
+test('a step-limited turn reports its actions instead of the raw tool payload', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: '' }, async () => {
+    const saved = { maxAgentSteps: settings.maxAgentSteps, googleServiceAccount: settings.googleServiceAccount };
+    settings.maxAgentSteps = 2;
+    settings.googleServiceAccount = null;
+    // The model loops: it asks for the same action again every round-trip.
+    __setFetchMock(async () =>
+      jsonResponse({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: 'ادامه می‌دهم\n```action\n{"service":"gdrive","action":"create_folder","params":{"name":"demo"}}\n```',
+                },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      })
+    );
+    try {
+      const result = await runAgent({ userId: 9, history: [], prompt: 'پوشه بساز' });
+      assert.ok(result.actions.length >= 1, 'the actions ran');
+      assert.doesNotMatch(result.reply, /\[نتیجه اجرای عملیات\]/, 'the tool payload never reaches the user');
+      assert.doesNotMatch(result.reply, /```/, 'no action fence leaks either');
+      assert.match(result.reply, /❌|✅/, 'the outcome of each action is stated');
+    } finally {
+      Object.assign(settings, saved);
+      __setFetchMock(null);
+    }
+  });
+});
+
+test('a turn that runs out of budget still reports the executed actions', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: '', deepseekApiKey: '' }, async () => {
+    const originalToken = settings.githubToken;
+    settings.githubToken = 'ghp_testtokenvalue000000000000000000';
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let modelCalls = 0;
+    __setFetchMock(async (url) => {
+      if (String(url).includes('api.github.com')) {
+        // A realistic tool latency, so the turn budget is spent inside the step.
+        await sleep(600);
+        return jsonResponse({ path: 'a.txt', content: 'aGk=', sha: 'deadbeef', html_url: 'https://github.com/a/b/blob/main/a.txt' });
+      }
+      modelCalls += 1;
+      await sleep(2500);
+      return jsonResponse({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: 'الان انجام می‌دهم\n```action\n{"service":"github","action":"read_file","params":{"repo":"a/b","path":"a.txt"}}\n```',
+                },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      });
+    });
+    try {
+      // The first model call eats the budget down to ~12.5s; the tool takes
+      // ~0.6s more, so there is no time left for the narrating round-trip.
+      const result = await runAgent({ userId: 9, history: [], prompt: 'فایل را بخوان', budgetMs: 15000 });
+      assert.equal(modelCalls, 1, 'no second round-trip was attempted');
+      assert.equal(result.actions.length, 1);
+      assert.equal(result.actions[0].ok, true);
+      assert.doesNotMatch(result.reply, /```/, 'no raw action block leaks to the user');
+      assert.match(result.reply, /✅/, 'the successful result is reported');
+      assert.match(result.reply, /a\.txt/, 'what was read is named');
+    } finally {
+      settings.githubToken = originalToken;
+      __setFetchMock(null);
+    }
+  });
+});
+
+test('Gemini 2.5 keeps its numeric budget, 3.6+ drops sampling params', () => {
+  const messages = [{ role: 'user', content: 'hi' }];
+
+  const older = toGeminiRequest(messages, '', { model: 'gemini-2.5-flash', apiKey: 'k' });
+  assert.equal(older.body.generationConfig.thinkingConfig.thinkingBudget, 0);
+  assert.equal(older.body.generationConfig.thinkingConfig.thinkingLevel, undefined);
+  assert.equal(typeof older.body.generationConfig.temperature, 'number');
+
+  const newest = toGeminiRequest(messages, '', { model: 'gemini-3.6-flash', apiKey: 'k' });
+  assert.deepEqual(newest.body.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  assert.equal(newest.body.generationConfig.temperature, undefined, '3.6+ rejects custom sampling');
+
+  const level = toGeminiRequest(messages, '', { model: 'gemini-3.6-flash', apiKey: 'k', thinkingLevel: 'high' });
+  assert.equal(level.body.generationConfig.thinkingConfig.thinkingLevel, 'high');
+
+  // Unknown families get no thinking knob at all rather than the wrong one.
+  const unknown = toGeminiRequest(messages, '', { model: 'some-model', apiKey: 'k' });
+  assert.equal(unknown.body.generationConfig.thinkingConfig, undefined);
+});
+
+test('DeepSeek asks for a non-thinking answer so it fits the failover deadline', () => {
+  const body = toOpenAIRequest([{ role: 'user', content: 'hi' }], 'SYS', {
+    model: settings.deepseekModel,
+    apiKey: 'd',
+    baseUrl: 'https://api.deepseek.com',
+    thinking: false,
+  }).body;
+  assert.deepEqual(body.thinking, { type: 'disabled' });
+
+  // Grok/xAI rejects unknown fields, so no thinking switch is sent there.
+  const grok = toOpenAIRequest([{ role: 'user', content: 'hi' }], 'SYS', {
+    model: 'grok-4.3',
+    apiKey: 'x',
+    baseUrl: 'https://api.x.ai/v1',
+    thinking: false,
+  }).body;
+  assert.equal(grok.thinking, undefined);
+});
+
+test('retired model ids are flagged instead of failing with a 404 later', async () => {
+  const saved = { xaiModel: settings.xaiModel, deepseekModel: settings.deepseekModel };
+  try {
+    settings.xaiModel = 'grok-4-fast-non-reasoning';
+    settings.deepseekModel = 'deepseek-chat';
+    const catalog = providerCatalog();
+    const grok = catalog.find((provider) => provider.name === 'grok');
+    const deepseek = catalog.find((provider) => provider.name === 'deepseek');
+    assert.equal(grok.retiredModel, true);
+    assert.equal(grok.suggestedModel, 'grok-4.3');
+    assert.equal(deepseek.retiredModel, true);
+    assert.equal(deepseek.suggestedModel, 'deepseek-flash');
+    assert.equal(catalog.find((provider) => provider.name === 'gemini').retiredModel, false);
+  } finally {
+    Object.assign(settings, saved);
+  }
+});
+
+test('the fallback notice names each failed provider once per turn', async () => {
+  __resetDatabase();
+  await withAi({ geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd' }, async () => {
+    let hits = 0;
+    __setFetchMock(async (url) => {
+      const target = String(url);
+      if (target.includes('generativelanguage')) {
+        hits += 1;
+        // First round-trip: Gemini answers with an action; the summary call 429s.
+        return hits === 1
+          ? jsonResponse({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        text: '```action\n{"service":"gdrive","action":"create_folder","params":{"name":"x"}}\n```',
+                      },
+                    ],
+                  },
+                },
+              ],
+            })
+          : jsonResponse({ error: { message: 'quota' } }, 429);
+      }
+      if (target.includes('api.x.ai')) return jsonResponse({ error: { message: 'down' } }, 503);
+      return jsonResponse({ choices: [{ message: { content: 'تمام شد' }, finish_reason: 'stop' }] });
+    });
+    try {
+      const result = await runAgent({ userId: 3, history: [], prompt: 'پوشه بساز' });
+      // Gemini failed twice (round-trip 2), Grok once: the notice is built by
+      // the handler from `attempts`, so check the dedupe helper's input shape.
+      const labels = [...new Set(result.attempts.filter((a) => !a.ok && !a.skipped).map((a) => a.label))];
+      assert.deepEqual(labels, ['Gemini', 'Grok']);
+      assert.equal(result.provider, 'deepseek');
+    } finally {
+      __setFetchMock(null);
+    }
+  });
 });
