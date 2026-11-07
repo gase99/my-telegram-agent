@@ -1,13 +1,17 @@
 # AGENTS.md
 
-Repo-specific operating notes for coding agents. Keep this file aligned with the executable code; the SDK reference is in [docs/tgcloud-sdk.md](docs/tgcloud-sdk.md).
+Repo-specific operating notes for coding agents. Keep this file aligned with the
+executable code; the SDK reference is in [docs/tgcloud-sdk.md](docs/tgcloud-sdk.md).
 
 ## Runtime and layout
 
 - This is a `tgcloud` serverless Telegram bot plus a Telegram Mini App, not a conventional Node server. Bot modules run in a V8 isolate; do not use Node built-ins, filesystem access, or npm packages from `tgcloud/` at runtime. Only the platform `sdk` and project modules are available.
-- Deployed code is under `tgcloud/`: `schema.js`, `handlers/`, `endpoints/`, and `lib/`. The Mini App static directory is `miniapp/`, selected by `tgcloud.jsonc` (`"static": "miniapp"`); it is served as-is, with no build step currently configured.
-- Main flow: `handlers/message.js` stores Telegram text messages, loads the latest 20 messages for the chat, calls `lib/beatapi.js`, stores the assistant reply, then sends it through the Telegram Bot API. The Mini App calls `endpoints/agent.js` with `{ prompt }`; that endpoint calls the same `chat()` helper and returns `{ output }`. `endpoints/history.js` reads the `messages` table for the verified Mini App user.
-- `lib/beatapi.js` calls the Gemini Generative Language API; the model identifier and request format are defined there. Verify provider/model compatibility before changing them.
+- Deployed code is under `tgcloud/`: `schema.js`, `handlers/`, `endpoints/`, and `lib/`. The Mini App static directory is `miniapp/`, selected by `tgcloud.jsonc` (`"static": "miniapp"`); it is served as-is, with no build step.
+- Main flow: `handlers/message.js` handles commands (`/start`, `/status`, `/clear`, `/id`), otherwise stores the message and calls `lib/ai.js#runAgent`; the Mini App calls `endpoints/agent.js` with `{ prompt }`, which runs the same agent and persists both sides of the conversation.
+- The agent loop lives in `lib/ai.js`: `generate()` calls Gemini, `parseActions()` extracts the model's requested operations, `lib/actions.js` validates and executes them, and the results are fed back for a Persian summary. `runAgent` is bounded by `MAX_AGENT_STEPS`, `MAX_ACTIONS_PER_TURN`, and a 42s wall-clock budget.
+- The model may only request the operations listed in the `CATALOG` of `lib/actions.js`. There is deliberately no generic HTTP action: adding one would break the security model.
+- Destructive operations go through `lib/approvals.js`: a one-shot token is stored, returned to the Mini App, and only `endpoints/approve.js` executes it. The token row is deleted inside the approve call, so replays fail.
+- Integration clients: `lib/github.js`, `lib/gitlab.js`, `lib/gdrive.js`. All HTTP goes through `lib/http.js` (retries on 429/5xx, timeouts, Persian error messages). `lib/jwt.js` signs Google's service-account assertion because the isolate has no `crypto` module — WebCrypto is used when present, otherwise a local RS256 implementation (verified against Node's crypto in `tests/`).
 
 ## Non-obvious platform rules
 
@@ -16,12 +20,27 @@ Repo-specific operating notes for coding agents. Keep this file aligned with the
 - An endpoint receives `(input, ctx)`; the Mini App JSON body is `input`, and verified Telegram identity is `ctx.initData.user`. There is no `ctx.user`.
 - Await every database operation. Foreign keys are unsupported and declarations using `.references()` / `foreignKey()` fail. Schema changes are applied only by the explicit migration command, not by deploy.
 - Do not import Mini App code into `tgcloud/`; the Mini App communicates with server modules through `Telegram.WebApp.Serverless.call()` and named endpoints.
+- A table descriptor exposes its columns as properties (`chats.userId`); query helpers compare those column refs, never raw strings.
+
+## Configuration and secrets
+
+- `tgcloud/lib/config.js` is intentionally gitignored and deployed with the code. `tgcloud/lib/config.example.js` is the committed template — keep the two in sync when adding a key.
+- Every module reads configuration through `lib/settings.js`, never from `config.js` directly. That layer supplies defaults for keys a stale local config may lack.
+- Never print, log, commit, or expose a key. `lib/security.js#redactSecrets` masks configured values and known token shapes; call it on any provider error before it reaches a response, a Telegram message, or a log line.
+- `ALLOWED_USER_IDS` is the only authorization gate. An endpoint must check it *and* derive the user from `ctx.initData.user`, never from client input.
+
+## Mini App rules
+
+- The page is a single `miniapp/index.html` with no build step. It must not reference `localhost` or any backend URL: endpoints are called by name through `Telegram.WebApp.Serverless.call`.
+- Everything rendered from model output goes through `escapeHtml`/`renderMarkdown`; never inject raw text into `innerHTML`.
+- Keep `direction: ltr; unicode-bidi: isolate` on code, ids, timestamps, and prompt symbols — the page is RTL and mixed content reorders otherwise.
+- Layout must follow `tg.viewportHeight` (live, not stable) so the composer stays above the keyboard, and use `env(safe-area-inset-*)` for notches.
 
 ## Setup and commands
 
-- Root `package.json` has only `deploy`, `status`, and `run` scripts; it defines no test, lint, typecheck, or build script. The CLI is the `@tgcloud/cli` dev dependency (Node.js >=18).
+- Root `package.json` has `deploy`, `status`, `run`, and `test` scripts; `type: module`.
 - Install local dependencies with `npm install`; link the project to a bot with `npx tgcloud login`.
-- Inspect pending changes with `npx tgcloud status`.
+- `npm test` links `tests/stubs/sdk` into `node_modules` and runs `node --test`. The stub implements enough of `db`/`api`/`fetch` to exercise the modules offline; it also allows injecting canned HTTP responses (`__setFetchMock`).
 - Run an endpoint locally with the CLI, supplying a test context when it reads Telegram identity, e.g.:
   `npx tgcloud run endpoints/agent '{"prompt":"ping"}' --ctx '{ initData: { user: { id: 1 } } }'`
 - `npm run deploy` is an alias for `tgcloud push`. Push deploys modules and the current `miniapp/` static files; it does **not** build the front end or migrate the database.
@@ -30,8 +49,8 @@ Repo-specific operating notes for coding agents. Keep this file aligned with the
 
 ## Project-specific cautions
 
-- `tgcloud/lib/config.js` is intentionally gitignored and imported by `lib/beatapi.js` for `GEMINI_API_KEY`. Never print, log, commit, or expose its contents; do not replace it with a hard-coded key.
-- Current persistence is asymmetric: the Telegram handler stores messages by `msg.chat.id`, while Mini App history reads by `ctx.initData.user.id` (these match in a private chat, not necessarily in a group). The Mini App `agent` endpoint currently does not persist its prompts or responses. Preserve this behavior unless the requested change explicitly addresses conversation storage.
-- The Mini App sends endpoint requests through the official `Telegram.WebApp.Serverless.call()` API. Keep Telegram init-data verification in the platform path; do not invent a client-supplied user ID as authentication.
-- The message handler sends assistant text with Telegram `parse_mode: 'Markdown'`; account for Telegram Markdown constraints when changing response formatting.
-- No source files should be changed during a read-only audit. Report findings and a prioritized plan first, and wait for explicit approval before implementation. Never delete existing code or expose credentials.
+- Current persistence has two key styles: new rows carry `userId` + `chatRef` (and `chatId` for the Telegram column), while pre-agent rows carry `chatId` only. `lib/store.js` reads both (`OR` branch) and `handlers/message.js` adopts legacy rows on first contact. Do not drop the `chatId` writes — they keep history visible in both clients.
+- The Telegram handler sends HTML after escaping, not Markdown: model output with a stray `*` or `_` makes Telegram reject the whole message.
+- Gemini 3.x Flash models are thinking models; the request sets `thinkingConfig.thinkingBudget: 0`. Without it a turn can return only reasoning tokens and an empty text part.
+- `lib/beatapi.js` was removed in the agent rewrite; do not resurrect it. The single Gemini entry point is `lib/ai.js`.
+- Tests must not require network access or credentials: `settings.*` fields are mutable for the duration of a test and restored in `finally`.

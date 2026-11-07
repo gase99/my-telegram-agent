@@ -7,6 +7,9 @@
   "scripts": {
     "deploy": "tgcloud push",
     "status": "tgcloud status",
-    "run": "tgcloud run"
-  }
+    "run": "tgcloud run",
+    "test": "node tests/setup.mjs && node --test \"tests/**/*.test.mjs\"",
+    "test:watch": "node tests/setup.mjs && node --test --watch \"tests/**/*.test.mjs\""
+  },
+  "type": "module"
 }
