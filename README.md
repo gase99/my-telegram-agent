@@ -71,7 +71,8 @@ Fill in `tgcloud/lib/config.js` (it is gitignored — never commit it):
 | `XAI_API_KEY` | https://console.x.ai — Grok (OpenAI-compatible) |
 | `DEEPSEEK_API_KEY` | https://platform.deepseek.com/api_keys |
 | `AI_FALLBACK_ORDER` | default `['gemini', 'grok', 'deepseek']` — the order providers are tried in |
-| `GEMINI_MODEL` / `XAI_MODEL` / `DEEPSEEK_MODEL` | model ids; defaults are in the template |
+| `GEMINI_MODEL` / `XAI_MODEL` / `DEEPSEEK_MODEL` | model ids; defaults `gemini-3.5-flash` / `grok-4.3` / `deepseek-flash` |
+| `AI_THINKING_LEVEL` | Gemini 3+ thinking level: `minimal` · `low` (default) · `medium` · `high` |
 | `GITHUB_TOKEN` | classic token with `repo` + `workflow`, or fine-grained Contents/PR/Actions RW |
 | `GITHUB_DEFAULT_REPO` | `owner/name` used when the user does not name a repo |
 | `GITLAB_TOKEN`, `GITLAB_DEFAULT_PROJECT` | GitLab PAT with `api` scope |
@@ -110,7 +111,19 @@ gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► de
   answering badge green and the failed-over ones red, and the bot adds a short
   "🔁 پاسخ از X آمد" line when a fallback happened;
 - if every provider fails, the turn raises one error that lists what each
-  provider said, with keys redacted.
+  provider said, with keys redacted;
+- the provider adapters track each vendor's current API: Gemini 3+ uses
+  `thinkingLevel` (numeric `thinkingBudget` is deprecated and can 400) and no
+  custom sampling since 3.6, and DeepSeek is asked for a non-thinking answer so
+  a failover hop fits in `AI_TIMEOUT_MS`;
+- `/status` and the Mini App warn when a model id in `config.js` has been
+  retired by its provider (`grok-4-fast-*`, `deepseek-chat`, …) instead of
+  letting the first request fail with a 404.
+
+A turn never loses executed work: if the wall-clock budget runs out, the model
+loop hits `MAX_AGENT_STEPS`, or the summarising call fails, the reply is built
+from the tool results themselves (`✅ read_file — a/b › x.js`) instead of the raw
+payload or a half-finished "I'll do it" preamble.
 
 ## How the agent executes real work
 

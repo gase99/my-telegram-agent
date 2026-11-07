@@ -42,6 +42,8 @@ export default async function getStatus(_input, ctx) {
   ]);
 
   const providers = providerCatalog();
+  // Retired model ids still look "configured" but answer 404 on the first call.
+  const retired = providers.filter((provider) => provider.retiredModel);
 
   return {
     model: {
@@ -50,7 +52,14 @@ export default async function getStatus(_input, ctx) {
       configured: providers.some((provider) => provider.configured),
       order: providers.map((provider) => provider.name),
       timeoutMs: settings.aiTimeoutMs,
+      thinkingLevel: settings.aiThinkingLevel,
       providers,
+      // [{ name, model, suggestedModel }] — the UI shows a warning for these.
+      retiredModels: retired.map((provider) => ({
+        name: provider.name,
+        model: provider.model,
+        suggestedModel: provider.suggestedModel,
+      })),
     },
     services: { github: githubStatus, gitlab: gitlabStatus, gdrive: driveStatus },
     pending: Array.isArray(pending) ? pending : [],

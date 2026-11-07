@@ -12,6 +12,7 @@ import { api, db } from 'sdk';
 import { and, eq, isNull } from 'sdk/db';
 import { messages } from '../schema.js';
 import { isUserAllowed, ACCESS_DENIED_MESSAGE, integrationStatus } from '../lib/security.js';
+import { providerCatalog } from '../lib/ai.js';
 
 export default async function (query) {
   const data = String(query?.data || '');
@@ -27,8 +28,16 @@ export default async function (query) {
 
     if (data === 'status') {
       const state = integrationStatus();
+      // The AI chain, not just Gemini: failover is the point of the status.
+      const ai = providerCatalog()
+        .map((provider) => {
+          const icon = provider.configured ? '🟢' : '🔴';
+          const stale = provider.retiredModel ? '⚠️' : '';
+          return `${icon} ${stale}${provider.label}`.trim();
+        })
+        .join(' · ');
       const text = [
-        `${state.gemini ? '🟢' : '🔴'} Gemini`,
+        ai,
         `${state.github ? '🟢' : '🔴'} GitHub`,
         `${state.gitlab ? '🟢' : '🔴'} GitLab`,
         `${state.gdrive ? '🟢' : '🔴'} Google Drive`,

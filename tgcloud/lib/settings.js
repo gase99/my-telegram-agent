@@ -91,6 +91,13 @@ const maxOutputTokens = int(
   { min: 512, max: 65536 }
 );
 
+// Gemini 3+ replaced numeric thinking budgets with a discrete level.
+const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'];
+const thinkingLevel = (value) => {
+  const level = String(value ?? '').toLowerCase().trim();
+  return THINKING_LEVELS.includes(level) ? level : 'low';
+};
+
 export const settings = {
   // ── AI: Google Gemini ────────────────────────────────────────────────────
   geminiApiKey: str(config.GEMINI_API_KEY),
@@ -99,12 +106,12 @@ export const settings = {
 
   // ── AI: xAI Grok (OpenAI compatible) ─────────────────────────────────────
   xaiApiKey: str(config.XAI_API_KEY),
-  xaiModel: str(config.XAI_MODEL) || 'grok-4-fast-non-reasoning',
+  xaiModel: str(config.XAI_MODEL) || 'grok-4.3',
   xaiBaseUrl: url(config.XAI_BASE_URL, 'https://api.x.ai/v1'),
 
   // ── AI: DeepSeek (OpenAI compatible) ─────────────────────────────────────
   deepseekApiKey: str(config.DEEPSEEK_API_KEY),
-  deepseekModel: str(config.DEEPSEEK_MODEL) || 'deepseek-chat',
+  deepseekModel: str(config.DEEPSEEK_MODEL) || 'deepseek-flash',
   deepseekBaseUrl: url(config.DEEPSEEK_BASE_URL, 'https://api.deepseek.com'),
 
   // ── AI: failover ─────────────────────────────────────────────────────────
@@ -114,6 +121,8 @@ export const settings = {
   aiTimeoutMs: int(config.AI_TIMEOUT_MS, 15000, { min: 1000, max: 60000 }),
   aiTemperature: temperature,
   aiMaxOutputTokens: maxOutputTokens,
+  // Gemini 3+ `thinkingConfig.thinkingLevel`; older Gemini models ignore it.
+  aiThinkingLevel: thinkingLevel(config.AI_THINKING_LEVEL),
 
   // Kept for modules/tests written before the failover layer existed.
   geminiTemperature: temperature,
@@ -176,6 +185,33 @@ export function isConfigured(service) {
     case 'grok':
     case 'deepseek': return Boolean(providerKey(service));
     default: return false;
+  }
+}
+
+/**
+ * Model ids that the provider has retired. They still look valid in an old
+ * config.js, so the failure would only show up as a 404 mid-conversation.
+ * Returned as data (never thrown) so a status call can surface it.
+ */
+const RETIRED_MODELS = {
+  grok: (model) => /^grok-4-fast/.test(model),
+  deepseek: (model) => /^deepseek-(chat|reasoner)$/.test(model),
+};
+
+/** `[{ provider, model, replacement }]` for models that no longer resolve. */
+export function retiredModels() {
+  return Object.entries(RETIRED_MODELS)
+    .filter(([provider, isRetired]) => isRetired(providerModel(provider)))
+    .map(([provider]) => ({ provider, model: providerModel(provider), replacement: defaultModel(provider) }));
+}
+
+/** The built-in model id for a provider (used as the migration hint). */
+function defaultModel(name) {
+  switch (name) {
+    case 'gemini': return 'gemini-3.5-flash';
+    case 'grok': return 'grok-4.3';
+    case 'deepseek': return 'deepseek-flash';
+    default: return '';
   }
 }
 

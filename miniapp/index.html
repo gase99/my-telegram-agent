@@ -756,6 +756,10 @@
           const error = new Error(message);
           error.type = err.type;
           error.status = err.status;
+          // EndpointError parameters carry the per-provider verdicts; without
+          // them a failed turn could only paint every badge red.
+          error.parameters = err.parameters || null;
+          error.code = err.parameters?.code || null;
           reject(error);
           return;
         }
@@ -987,23 +991,43 @@
     });
   }
 
-  /** The whole chain failed; keep the reason on the badges. */
-  function markProvidersFailed(detail) {
+  /**
+   * The whole chain failed. Prefer the server's per-provider report (it knows
+   * whether the failure was a 429, a timeout or a missing key); fall back to
+   * painting every configured provider red.
+   */
+  function markProvidersFailed(detail, providers) {
+    const list = Array.isArray(providers) ? providers : [];
+    if (list.some((item) => item?.status === 'failed' || item?.status === 'skipped')) {
+      applyProviderReport(null, list);
+      return;
+    }
     Object.entries(state.models).forEach(([name, info]) => {
       if (info.status === 'off') return;
       setModelBadge(name, 'failed', detail || 'پاسخی نرسید');
     });
   }
 
-  /** Status refresh: configured providers stand by, the rest are switched off. */
+  /**
+   * Status refresh: configured providers stand by, the rest are switched off.
+   * A provider that failed on the *last* request keeps its red badge — a
+   * background status poll must not repaint a real failure as "idle".
+   */
   function applyProviderCatalog(providers) {
     (providers || []).forEach((provider) => {
       if (!provider?.name) return;
-      setModelBadge(
-        provider.name,
-        provider.configured ? 'idle' : 'off',
-        provider.configured ? `مدل: ${provider.model || '—'}` : 'کلید API تنظیم نشده'
-      );
+      const current = state.models[provider.name];
+      const keepVerdict = current && (current.status === 'active' || current.status === 'failed');
+      const detail = provider.configured
+        ? provider.retiredModel
+          ? `⚠️ مدل «${provider.model}» بازنشسته شده؛ ${provider.suggestedModel} را در config بگذارید`
+          : `مدل: ${provider.model || '—'}`
+        : 'کلید API تنظیم نشده';
+      if (keepVerdict && provider.configured) {
+        setModelBadge(provider.name, current.status, current.detail || detail);
+        return;
+      }
+      setModelBadge(provider.name, provider.configured ? 'idle' : 'off', detail);
     });
   }
 
@@ -1012,9 +1036,11 @@
     if (!provider) return '';
     const meta = modelMeta(provider);
     const label = providerLabel || meta.name;
-    const failed = (Array.isArray(providers) ? providers : [])
-      .filter((item) => item && item.status === 'failed')
-      .map((item) => modelMeta(item.name).name);
+    const failed = [...new Set(
+      (Array.isArray(providers) ? providers : [])
+        .filter((item) => item && item.status === 'failed')
+        .map((item) => modelMeta(item.name).name)
+    )];
     return `[System: Handled by ${label} ${meta.icon}]${failed.length ? ` · fallback from ${failed.join(', ')}` : ''}`;
   }
 
@@ -1036,7 +1062,8 @@
 
     const connected = ['github', 'gitlab', 'gdrive'].filter((key) => services[key]?.connected).length;
     const ready = providers.filter((provider) => provider.configured);
-    el.connDot.className = `dot ${connected > 0 || ready.length ? 'on' : 'warn'}`;
+    const retired = providers.filter((provider) => provider.retiredModel);
+    el.connDot.className = `dot ${retired.length ? 'warn' : connected > 0 || ready.length ? 'on' : 'warn'}`;
     el.connText.textContent = `${connected}/3 سرویس · AI: ${
       ready.length ? ready.map((provider) => modelMeta(provider.name).name).join(' / ') : 'بدون کلید'
     }`;
@@ -1236,7 +1263,7 @@
       }
     } catch (err) {
       pendingEntry.remove();
-      markProvidersFailed(err.message);
+      markProvidersFailed(err.message, err.parameters?.providers);
       appendError(`❌ ${err.message}`);
       haptic('error');
     } finally {

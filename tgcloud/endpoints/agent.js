@@ -49,7 +49,9 @@ export default async function agentEndpoint(input, ctx) {
   }
 
   const chat = await ensureChat({ userId, chatId: input?.chatId ?? null, title: prompt });
-  const history = await recentMessages({ userId, chatRef: chat.id, limit: settings.maxHistory });
+  // Read before writing: the stored copy of this prompt must not appear twice
+  // in the transcript the model sees (once as history, once as the new turn).
+  const history = await recentMessages({ userId, chatRef: chat.id, limit: Math.max(settings.maxHistory - 1, 1) });
 
   await addMessage({ userId, chatRef: chat.id, role: 'user', content: prompt });
 
