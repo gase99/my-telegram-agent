@@ -159,12 +159,13 @@ verified Telegram id, and only `endpoints/approve.js` runs them.
 
 Open it from the bot. It provides:
 
-- a scrolling terminal with markdown-ish rendering, syntax-tinted code blocks and copy buttons
-- a typing indicator while the agent works, plus one line per executed operation
+- a scrolling terminal with safely escaped basic Markdown, LTR code blocks and paginated history
+- a processing status while the agent works, plus one line per executed operation
 - connection badges (GitHub / GitLab / Drive) that probe the real APIs, plus live **AI provider badges** (Gemini · Grok · DeepSeek · Kimi): green for the model that answered the last request, red for the ones that failed over, faded when no key is configured
 - a three-second dark splash screen with an animated AI star, model-name sequence and progress bar; it fades even when the backend is unavailable
-- approval cards for destructive actions, a quick-command panel, JSON history export
-- Telegram/device safe-area handling, `100dvh` + live `visualViewport` keyboard-aware layout, LTR-isolated code, haptics, and a message queue so nothing typed is lost
+- approval/rejection cards for destructive actions (also restored on reload), connection refresh, and explicitly confirmed history clearing
+- Telegram/device safe-area handling, `100dvh` + live `visualViewport` keyboard-aware layout, LTR-isolated code, and duplicate-submit protection; text typed during a request stays in the composer
+- a clear Telegram-only connection notice outside the supported SDK environment; failed requests are not automatically retried because server-side actions may already have run
 
 The page talks to the backend only through `Telegram.WebApp.Serverless.call(...)`,
 which sends the verified init data; the Mini App never sees a token or key.
