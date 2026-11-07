@@ -2,7 +2,7 @@
 //
 // Request:  { prompt: string, chatId?: number }
 // Response: { output, provider, providerLabel, providers[], actions, pending,
-//             usage, model, historyId }
+//             usage, model, historyId, elapsedMs, fallback, trace }
 //
 // The caller is identified only by the platform-verified init data. Any write
 // action the model requested is either executed and logged, or (for
@@ -29,6 +29,7 @@ function fail(description, code, status = 400, parameters = {}) {
 }
 
 export default async function agentEndpoint(input, ctx) {
+  const startedAt = Date.now();
   const user = ctx?.initData?.user;
   const userId = user?.id;
   if (!userId) throw fail('این مینی‌اپ باید از داخل تلگرام باز شود.', 'NO_USER');
@@ -91,6 +92,20 @@ export default async function agentEndpoint(input, ctx) {
     providerLabel: result.providerLabel || null,
     providers: summariseAttempts(result.attempts, result.provider),
     historyId: assistantRow.id,
+    // The Mini App's live panel needs these to show a duration, the provider
+    // latency of the answering model, and whether the reply was narrated by the
+    // model or rebuilt from tool results (`fallback: true`).
+    elapsedMs: Date.now() - startedAt,
+    fallback: Boolean(result.fallback),
+    trace: (result.attempts || []).map((attempt) => ({
+      provider: attempt.provider,
+      label: attempt.label,
+      ok: Boolean(attempt.ok),
+      skipped: Boolean(attempt.skipped),
+      kind: attempt.kind || null,
+      ms: Number.isFinite(attempt.ms) ? attempt.ms : null,
+      message: attempt.message ? redactSecrets(attempt.message) : '',
+    })),
     actions: (result.actions || []).map((event) => ({
       service: event.service,
       action: event.action,

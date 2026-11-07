@@ -11,6 +11,9 @@ import { approvals } from '../schema.js';
 import { runAction, isKnownAction, describeAction } from './actions.js';
 import { sha256Hex } from './jwt.js';
 
+/** How long a stored approval stays actionable (see expireOld). */
+export const APPROVAL_TTL_HOURS = 24;
+
 /** Actions that always need a confirmation, whatever the config says. */
 const ALWAYS_CONFIRM = new Set(['delete_file', 'trash_file', 'share_file', 'trigger_workflow', 'trigger_pipeline']);
 
@@ -41,13 +44,18 @@ export async function createApproval({ userId, action, reason = '' }) {
   const payload = { action, reason, label: describeAction(action) };
   const token = newToken(payload);
   await db.insert(approvals).values({ token, userId, payload, status: 'pending' }).run();
+  const target = action.params?.path || action.params?.branch || action.params?.name || action.params?.fileId || '';
   return {
     token,
     label: payload.label,
     service: action.service,
     action: action.action,
     reason,
-    target: action.params?.path || action.params?.branch || action.params?.name || action.params?.fileId || '',
+    params: action.params || {},
+    target,
+    createdAt: new Date().toISOString(),
+    // The card counts down against the same window expireOld() prunes.
+    expiresAt: toIso(new Date(), APPROVAL_TTL_HOURS),
   };
 }
 
@@ -58,14 +66,30 @@ export async function pendingApprovals({ userId }) {
     .from(approvals)
     .where(and(eq(approvals.userId, userId), eq(approvals.status, 'pending')))
     .all();
-  return rows.map((row) => ({
-    token: row.token,
-    label: row.payload?.label || describeAction(row.payload?.action || {}),
-    reason: row.payload?.reason || '',
-    service: row.payload?.action?.service || '',
-    action: row.payload?.action?.action || '',
-    createdAt: row.created instanceof Date ? row.created.toISOString() : row.created,
-  }));
+  return rows.map((row) => {
+    const params = row.payload?.action?.params || {};
+    const createdAt = row.createdAt ?? row.created;
+    return {
+      token: row.token,
+      label: row.payload?.label || describeAction(row.payload?.action || {}),
+      reason: row.payload?.reason || '',
+      service: row.payload?.action?.service || '',
+      action: row.payload?.action?.action || '',
+      params,
+      // Same precedence as createApproval(), so a reloaded card looks identical.
+      target: params.path || params.branch || params.name || params.fileId || '',
+      createdAt: createdAt instanceof Date ? createdAt.toISOString() : createdAt || null,
+      // Lets the Mini App count down instead of guessing a lifetime.
+      expiresAt: toIso(createdAt, APPROVAL_TTL_HOURS),
+    };
+  });
+}
+
+function toIso(value, addHours = 0) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + addHours * 3600 * 1000).toISOString();
 }
 
 /**

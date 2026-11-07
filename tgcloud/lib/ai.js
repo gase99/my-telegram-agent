@@ -439,8 +439,13 @@ export function summariseAttempts(attempts = [], usedProvider = null) {
       label: provider.label,
       emoji: provider.emoji,
       status,
+      configured: Boolean(providerKey(name)),
       kind: last?.kind || null,
       message: last?.message || '',
+      // How long this provider took on its last try, for the latency chip.
+      ms: Number.isFinite(last?.ms) ? last.ms : null,
+      // Every attempt of this turn (a retry-free chain has at most one).
+      tryCount: seen.length,
     };
   });
 }
