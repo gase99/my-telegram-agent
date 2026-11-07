@@ -1,119 +1,234 @@
-// tgcloud/lib/ai.js — Gemini wrapper plus the agent action protocol.
+// tgcloud/lib/ai.js — multi-provider model transport with automatic failover,
+// plus the agent action protocol.
 //
 // Public surface:
-//   chat(messages, options)      → string                 plain completion
-//   runAgent({ userId, prompt }) → { reply, actions, pending, usage, model }
-//   parseActions(text)           → [{ service, action, params, reason }]
-//   stripActionBlocks(text)      → the answer without the JSON blocks
+//   generateWithFallback(messages, systemPrompt, options)
+//                                  → { text, provider, model, usage, attempts }
+//   generate(turns, options)       → the same shape (internal turn format)
+//   chat(messages, options)        → string
+//   runAgent({ userId, prompt })   → { reply, actions, pending, usage, model,
+//                                      provider, attempts }
+//   providerCatalog()              → [{ name, label, model, configured }]
+//   summariseAttempts(attempts, usedProvider)
+//                                  → per-provider status for the Mini App badges
+//   parseActions(text)             → [{ service, action, params, reason }]
+//   stripActionBlocks(text)        → the answer without the JSON blocks
 //
-// Gemini's REST API is called with the platform `fetch`; the key only ever
-// travels in the `x-goog-api-key` header, never in a URL that could end up in
-// an error message.
+// Transport rules:
+//   • every call goes out through `fetch` from `sdk` — no client libraries;
+//   • a key never travels in a URL: Gemini uses the `x-goog-api-key` header,
+//     Grok and DeepSeek (OpenAI-compatible) use `Authorization: Bearer <key>`;
+//   • a provider that answers 401/403/404/429/5xx, hangs for AI_TIMEOUT_MS
+//     (default 15s) or returns an empty/blocked answer is logged, recorded,
+//     and the next provider in AI_FALLBACK_ORDER answers instead;
+//   • `runAgent` passes its turn deadline down, so the chain can never outlive
+//     the endpoint's wall-clock budget.
 
-import { request, HttpError } from './http.js';
+import { fetch, db } from 'sdk';
 import { findJsonObjects, truncate } from './text.js';
 import { SYSTEM_PROMPT, SUMMARY_INSTRUCTION } from './prompt.js';
 import { redactSecrets } from './security.js';
 import { runAction, isKnownAction, describeAction, MAX_ACTIONS } from './actions.js';
-import { db } from 'sdk';
 import { agentActions } from '../schema.js';
-import { settings } from './settings.js';
+import {
+  settings,
+  providerKey,
+  providerModel,
+  AI_PROVIDERS,
+} from './settings.js';
 
-const API_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
-
-function modelName() {
-  return settings.geminiModel;
-}
 // Gemini 2.5+ "thinking" models spend tokens on reasoning; this keeps a turn
 // from silently returning an empty candidate.
 const THINKING_BUDGET = 0;
 // Leave room inside the platform's endpoint limit for the write-back to the DB.
 const AGENT_BUDGET_MS = 42000;
 const MIN_STEP_MS = 12000;
+// A provider must get at least this much of the remaining turn budget to be
+// worth starting; below it the chain stops and reports what it has.
+const MIN_PROVIDER_BUDGET_MS = 1500;
+// Default per-provider deadline (settings.aiTimeoutMs overrides it).
+const DEFAULT_TIMEOUT_MS = 15000;
 
 export class AiError extends Error {
-  constructor(message, { status = 0, retryable = false } = {}) {
+  constructor(message, { status = 0, retryable = false, attempts = null } = {}) {
     super(message);
     this.name = 'AiError';
     this.status = status;
     this.retryable = retryable;
+    this.attempts = attempts;
   }
 }
 
-/** True when the model is configured; endpoints use it for a friendly error. */
-export function isConfigured() {
-  return Boolean(settings.geminiApiKey);
+/** One provider call failed. `kind` says why, and every kind fails over. */
+class ProviderError extends Error {
+  constructor(message, { provider = '', status = 0, kind = 'http', failover = true } = {}) {
+    super(message);
+    this.name = 'ProviderError';
+    this.provider = provider;
+    this.status = status;
+    this.kind = kind;
+    this.failover = failover;
+  }
+}
+
+// ── prompt adapters ─────────────────────────────────────────────────────────
+//
+// The rest of the app speaks one neutral shape:
+//   [{ role: 'user'|'assistant'|'system', content: string }]
+// Each provider gets a tiny adapter that converts that into its own layout.
+
+const asText = (value) => String(value ?? '').trim();
+
+/**
+ * Split a neutral message list into system instructions and user/assistant
+ * turns. `text` is accepted as an alias for `content` so the internal Gemini
+ * turn shape ({ role, text }) keeps working.
+ */
+export function splitMessages(messages) {
+  const system = [];
+  const turns = [];
+  for (const raw of messages || []) {
+    const role = String(raw?.role ?? 'user').toLowerCase();
+    const content = asText(raw?.content ?? raw?.text ?? '');
+    if (!content) continue;
+    if (role === 'system' || role === 'developer') {
+      system.push(content);
+      continue;
+    }
+    turns.push({ role: role === 'assistant' || role === 'model' ? 'assistant' : 'user', content });
+  }
+  return { system: system.join('\n\n'), turns };
+}
+
+/** Merge consecutive same-role turns (Gemini dislikes duplicates). */
+function mergeTurns(turns) {
+  const merged = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) last.content += `\n\n${turn.content}`;
+    else merged.push({ ...turn });
+  }
+  return merged;
 }
 
 /**
- * Low-level completion.
- * @param {{role:'user'|'model',text:string}[]} turns
- * @param {object} options
- * @param {string} [options.system]      system instruction
- * @param {string} [options.model]
- * @param {number} [options.temperature]
- * @param {number} [options.maxOutputTokens]
+ * Gemini adapter: `contents: [{ role, parts: [{ text }] }]` plus a separate
+ * `systemInstruction`. Roles are `user` and `model` (not `assistant`).
+ * @returns {{ url:string, headers:object, body:object }}
  */
-export async function generate(turns, options = {}) {
-  if (!settings.geminiApiKey) {
-    throw new AiError('🤖 کلید Gemini تنظیم نشده است: GEMINI_API_KEY در tgcloud/lib/config.js خالی است.', {
-      status: 503,
-    });
-  }
-  const model = options.model || modelName();
+export function toGeminiRequest(messages, systemPrompt = '', options = {}) {
+  const { system, turns } = splitMessages(messages);
+  const contents = mergeTurns(turns).map((turn) => ({
+    role: turn.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: turn.content }],
+  }));
+  // Gemini expects a user turn first; a history that starts with the model is
+  // legal but wastes a turn, so drop the leading model message.
+  while (contents.length && contents[0].role === 'model') contents.shift();
+  if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'سلام' }] });
+
+  const model = options.model || settings.geminiModel;
+  const instructions = [asText(systemPrompt), system].filter(Boolean).join('\n\n');
   const body = {
-    contents: turns.map((turn) => ({
-      role: turn.role === 'assistant' || turn.role === 'model' ? 'model' : 'user',
-      parts: [{ text: String(turn.text ?? '') }],
-    })),
+    contents,
     generationConfig: {
-      temperature: options.temperature ?? settings.geminiTemperature,
-      maxOutputTokens: options.maxOutputTokens ?? settings.geminiMaxOutputTokens,
+      temperature: options.temperature ?? settings.aiTemperature,
+      maxOutputTokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
       // 3.x flash models are thinking models: without a budget they can return
       // only reasoning tokens and an empty text part.
       ...(isThinkingModel(model) ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET } } : {}),
     },
   };
-  if (options.system) body.systemInstruction = { parts: [{ text: options.system }] };
+  if (instructions) body.systemInstruction = { parts: [{ text: instructions }] };
 
-  let res;
-  try {
-    res = await request(`${API_ROOT}/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': settings.geminiApiKey, 'Content-Type': 'application/json' },
-      body,
-      service: 'Gemini',
-      timeoutMs: 60000,
-      retries: 1,
-    });
-  } catch (err) {
-    throw new AiError(translateGeminiError(err), { status: err.status || 0, retryable: err.retryable });
-  }
+  return {
+    url: `${settings.geminiBaseUrl}/models/${encodeURIComponent(model)}:generateContent`,
+    headers: { 'x-goog-api-key': options.apiKey ?? settings.geminiApiKey },
+    body,
+  };
+}
 
-  const data = res.data;
+/**
+ * OpenAI-compatible adapter (Grok, DeepSeek): a flat `messages` array with a
+ * leading `system` entry, `max_tokens`, and `Authorization: Bearer <key>`.
+ * @returns {{ url:string, headers:object, body:object }}
+ */
+export function toOpenAIRequest(messages, systemPrompt = '', options = {}) {
+  const { system, turns } = splitMessages(messages);
+  const model = options.model || '';
+  const chat = [];
+  const instructions = [asText(systemPrompt), system].filter(Boolean).join('\n\n');
+  if (instructions) chat.push({ role: 'system', content: instructions });
+  for (const turn of mergeTurns(turns)) chat.push({ role: turn.role, content: turn.content });
+  if (!chat.some((entry) => entry.role !== 'system')) chat.push({ role: 'user', content: 'سلام' });
+
+  return {
+    url: `${options.baseUrl}/chat/completions`,
+    headers: { Authorization: `Bearer ${options.apiKey}` },
+    body: {
+      model,
+      messages: chat,
+      stream: false,
+      temperature: options.temperature ?? settings.aiTemperature,
+      max_tokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
+    },
+  };
+}
+
+/** Gemini response → neutral result. */
+export function parseGeminiResponse(data) {
   const candidate = data?.candidates?.[0];
   if (!candidate) {
     const blockReason = data?.promptFeedback?.blockReason;
-    throw new AiError(
-      blockReason
-        ? `🛡 درخواست توسط فیلتر ایمنی مدل رد شد (${blockReason}).`
-        : '🤖 پاسخ خالی از مدل دریافت شد. دوباره تلاش کنید.'
+    throw new ProviderError(
+      blockReason ? `🛡 درخواست توسط فیلتر ایمنی مدل رد شد (${blockReason})` : 'پاسخ خالی از مدل',
+      { provider: 'gemini', kind: blockReason ? 'blocked' : 'empty' }
     );
   }
   const text = (candidate.content?.parts || [])
     .map((part) => part.text || '')
     .join('')
     .trim();
-
-  if (!text && candidate.finishReason === 'MAX_TOKENS') {
-    throw new AiError('✂️ پاسخ مدل به سقف توکن رسید؛ سؤال را کوتاه‌تر کنید یا GEMINI_MAX_OUTPUT_TOKENS را افزایش دهید.');
+  if (!text) {
+    throw new ProviderError(
+      candidate.finishReason === 'MAX_TOKENS'
+        ? '✂️ پاسخ به سقف توکن رسید و متن کاملی برنگشت'
+        : 'پاسخ خالی از مدل',
+      { provider: 'gemini', kind: 'empty' }
+    );
   }
-
   return {
     text,
-    model: data.modelVersion || model,
-    finishReason: candidate.finishReason,
-    usage: data.usageMetadata || null,
+    model: data?.modelVersion || '',
+    finishReason: candidate.finishReason || null,
+    usage: data?.usageMetadata || null,
+  };
+}
+
+/** OpenAI-compatible response → neutral result (usage is normalised). */
+export function parseOpenAIResponse(data, provider = 'openai') {
+  const choice = data?.choices?.[0];
+  const text = asText(choice?.message?.content);
+  if (!text) {
+    throw new ProviderError(
+      choice?.finish_reason === 'length'
+        ? '✂️ پاسخ به سقف توکن رسید و متن کاملی برنگشت'
+        : 'پاسخ خالی از مدل',
+      { provider, kind: 'empty' }
+    );
+  }
+  const raw = data?.usage || null;
+  return {
+    text,
+    model: data?.model || '',
+    finishReason: choice?.finish_reason || null,
+    usage: raw
+      ? {
+          ...raw,
+          // One shape for the UI regardless of provider.
+          totalTokenCount: raw.total_tokens ?? raw.totalTokenCount ?? null,
+        }
+      : null,
   };
 }
 
@@ -121,16 +236,425 @@ function isThinkingModel(model) {
   return /gemini-(2\.5|[3-9])/.test(String(model));
 }
 
-function translateGeminiError(err) {
-  if (err instanceof HttpError) {
-    if (err.status === 429) return '⏳ سهمیه درخواست Gemini پر شده است؛ چند دقیقه بعد دوباره امتحان کنید.';
-    if (err.status === 400 || err.status === 404) {
-      return `🤖 مدل «${modelName()}» در دسترس نیست یا درخواست نامعتبر بود. GEMINI_MODEL را در config.js بررسی کنید.`;
+// ── provider registry ───────────────────────────────────────────────────────
+
+const PROVIDERS = {
+  gemini: {
+    label: 'Gemini',
+    emoji: '✨',
+    key: () => settings.geminiApiKey,
+    model: () => settings.geminiModel,
+    build: (messages, system, options) => toGeminiRequest(messages, system, options),
+    parse: (data) => parseGeminiResponse(data),
+  },
+  grok: {
+    label: 'Grok',
+    emoji: '🚀',
+    key: () => settings.xaiApiKey,
+    model: () => settings.xaiModel,
+    build: (messages, system, options) =>
+      toOpenAIRequest(messages, system, {
+        ...options,
+        apiKey: options.apiKey ?? settings.xaiApiKey,
+        baseUrl: settings.xaiBaseUrl,
+      }),
+    parse: (data) => parseOpenAIResponse(data, 'grok'),
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    emoji: '🐋',
+    key: () => settings.deepseekApiKey,
+    model: () => settings.deepseekModel,
+    build: (messages, system, options) =>
+      toOpenAIRequest(messages, system, {
+        ...options,
+        apiKey: options.apiKey ?? settings.deepseekApiKey,
+        baseUrl: settings.deepseekBaseUrl,
+      }),
+    parse: (data) => parseOpenAIResponse(data, 'deepseek'),
+  },
+};
+
+/** True when at least one provider has a key. */
+export function isConfigured() {
+  return AI_PROVIDERS.some((name) => Boolean(providerKey(name)));
+}
+
+/** Provider names that actually take part in a request, in fallback order. */
+export function fallbackOrder(order = settings.aiFallbackOrder) {
+  const names = (Array.isArray(order) ? order : [])
+    .map((name) => String(name).toLowerCase().trim())
+    .filter((name) => PROVIDERS[name]);
+  const unique = [...new Set(names)];
+  return unique.length ? unique : settings.aiFallbackOrder.filter((name) => PROVIDERS[name]);
+}
+
+/** Everything the status bar needs to draw the model badges. */
+export function providerCatalog() {
+  return fallbackOrder().map((name) => ({
+    name,
+    label: PROVIDERS[name].label,
+    emoji: PROVIDERS[name].emoji,
+    model: providerModel(name),
+    configured: Boolean(providerKey(name)),
+  }));
+}
+
+/**
+ * Per-provider status for one request:
+ *   active  — answered the request (green)
+ *   failed  — was tried and failed (red)
+ *   skipped — no API key configured
+ *   idle    — configured, not needed this time
+ */
+export function summariseAttempts(attempts = [], usedProvider = null) {
+  return fallbackOrder().map((name) => {
+    const provider = PROVIDERS[name];
+    const seen = (attempts || []).filter((attempt) => attempt?.provider === name);
+    const last = seen[seen.length - 1] || null;
+    let status = 'idle';
+    if (name === usedProvider && last?.ok) status = 'active';
+    else if (last && !last.ok && !last.skipped) status = 'failed';
+    else if (!providerKey(name)) status = 'skipped';
+    else if (last?.ok) status = 'active';
+    return {
+      name,
+      label: provider.label,
+      emoji: provider.emoji,
+      status,
+      kind: last?.kind || null,
+      message: last?.message || '',
+    };
+  });
+}
+
+// ── HTTP transport ──────────────────────────────────────────────────────────
+
+function timersAvailable() {
+  return typeof setTimeout === 'function' && typeof clearTimeout === 'function';
+}
+
+function clampTimeout(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return settings.aiTimeoutMs || DEFAULT_TIMEOUT_MS;
+  return Math.min(Math.max(Math.floor(n), 1000), 60000);
+}
+
+/** How long a provider may take: its own cap, bounded by the turn deadline. */
+function providerBudget(timeoutMs, deadline) {
+  if (!Number.isFinite(deadline)) return timeoutMs;
+  return Math.min(timeoutMs, deadline - Date.now());
+}
+
+/**
+ * POST JSON through `sdk`'s fetch with a hard deadline. On timeout the request
+ * is aborted (`AbortController`, when the isolate provides one) and the caller
+ * moves on to the next provider.
+ */
+async function postJson(url, { headers, body, timeoutMs, providerName }) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const init = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  };
+  if (controller) init.signal = controller.signal;
+
+  const seconds = Math.round(timeoutMs / 1000);
+  let timer = null;
+  let res;
+  try {
+    if (timersAvailable() && timeoutMs > 0) {
+      const guard = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          try { controller?.abort(); } catch { /* already aborted */ }
+          reject(
+            new ProviderError(`⏱ پاسخ در ${seconds} ثانیه نرسید`, {
+              provider: providerName,
+              status: 408,
+              kind: 'timeout',
+            })
+          );
+        }, timeoutMs);
+      });
+      res = await Promise.race([fetch(url, init), guard]);
+    } else {
+      res = await fetch(url, init);
     }
-    if (err.status === 403) return '🔑 دسترسی به Gemini رد شد؛ کلید API و محدودیت‌های آن را بررسی کنید.';
-    return redactSecrets(err.message);
+  } catch (err) {
+    throw asProviderError(err, providerName);
+  } finally {
+    if (timer && timersAvailable()) clearTimeout(timer);
   }
-  return redactSecrets(err?.message || 'خطای نامشخص در تماس با Gemini');
+
+  let raw = '';
+  try {
+    raw = await res.text();
+  } catch {
+    raw = '';
+  }
+  const data = parseBody(raw);
+
+  if (!res.ok) {
+    throw new ProviderError(failureMessage(res.status, data, raw), {
+      provider: providerName,
+      status: res.status,
+      kind: classifyStatus(res.status),
+    });
+  }
+  if (data === null) {
+    throw new ProviderError(`🧾 پاسخ JSON نامعتبر (${res.status})`, {
+      provider: providerName,
+      status: res.status,
+      kind: 'invalid_body',
+    });
+  }
+  return data;
+}
+
+function parseBody(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+/** 429 / 403 / 5xx / timeouts / network errors all fail over. */
+function classifyStatus(status) {
+  if (!status) return 'network';
+  if (status === 401) return 'auth';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 408) return 'timeout';
+  if (status === 429) return 'rate_limit';
+  if (status >= 500) return 'server';
+  if (status === 400 || status === 422) return 'bad_request';
+  return 'http';
+}
+
+const KIND_LABELS = {
+  auth: '🔑 کلید نامعتبر',
+  forbidden: '🚫 دسترسی/سهمیه رد شد',
+  not_found: '❓ مدل یا مسیر پیدا نشد',
+  timeout: '⏱ زمان پاسخ تمام شد',
+  rate_limit: '⏳ محدودیت نرخ یا سهمیه',
+  server: '🔥 خطای سرور',
+  bad_request: '✋ درخواست نامعتبر',
+  network: '🌐 خطای شبکه',
+  empty: '🫙 پاسخ خالی',
+  blocked: '🛡 فیلتر ایمنی',
+  invalid_body: '🧾 پاسخ ناخوانا',
+  http: '⚠️ خطای HTTP',
+  not_configured: '🔌 کلید تنظیم نشده',
+  budget: '⌛ زمان نوبت تمام شد',
+};
+
+/**
+ * One Persian line for a provider failure. The provider name is deliberately
+ * absent: callers prefix it (`• Gemini: …` in the final error, the badge title
+ * in the Mini App, the attempt label in the log).
+ */
+function failureMessage(status, data, rawText) {
+  const detail = extractProviderMessage(data, rawText).slice(0, 220);
+  const label = KIND_LABELS[classifyStatus(status)] || KIND_LABELS.http;
+  return `${label} (${status})${detail ? ` — ${detail}` : ''}`;
+}
+
+function extractProviderMessage(data, rawText) {
+  if (!data) return redactSecrets(String(rawText ?? '').slice(0, 220));
+  const raw =
+    (data.error && (data.error.message || (typeof data.error === 'string' && data.error))) ||
+    data.message ||
+    data.error_description ||
+    (Array.isArray(data.errors) && data.errors.map((entry) => entry?.message || entry?.code).join('; ')) ||
+    '';
+  return raw ? redactSecrets(String(raw)) : '';
+}
+
+function asProviderError(err, providerName) {
+  if (err instanceof ProviderError) {
+    if (!err.provider) err.provider = providerName;
+    return err;
+  }
+  const message = redactSecrets(err?.message || String(err) || 'خطای نامشخص');
+  const aborted = /abort|cancel/i.test(message);
+  return new ProviderError(`🌐 ${aborted ? 'درخواست لغو شد' : `خطای شبکه — ${message}`}`, {
+    provider: providerName,
+    status: 0,
+    kind: aborted ? 'timeout' : 'network',
+  });
+}
+
+function logFailure(name, provider, error) {
+  try {
+    const status = error.status ? ` ${error.status}` : '';
+    console.warn(`[ai] ${provider.label} (${name}) failed [${error.kind}${status}] → next provider: ${redactSecrets(error.message)}`);
+  } catch {
+    // Logging must never break the chain.
+  }
+}
+
+// ── the orchestrator ────────────────────────────────────────────────────────
+
+/**
+ * Ask the configured providers in order until one answers.
+ *
+ * @param {{role:string, content:string}[]} messages  neutral prompt
+ * @param {string} [systemPrompt]
+ * @param {object} [options]
+ * @param {string[]}  [options.providers]     override AI_FALLBACK_ORDER
+ * @param {number}    [options.timeoutMs]     per-provider deadline (default 15s)
+ * @param {number}    [options.deadline]      absolute epoch ms for the whole chain
+ * @param {string}    [options.model]         model id for the first provider only
+ * @param {object}    [options.models]        per-provider model overrides
+ * @param {number}    [options.temperature]
+ * @param {number}    [options.maxOutputTokens]
+ * @returns {Promise<{ text:string, provider:string, providerLabel:string,
+ *                     model:string, usage:object|null, finishReason:string|null,
+ *                     attempts:object[] }>}
+ */
+export async function generateWithFallback(messages, systemPrompt = '', options = {}) {
+  const order = fallbackOrder(options.providers ?? settings.aiFallbackOrder);
+  const timeoutMs = clampTimeout(options.timeoutMs ?? settings.aiTimeoutMs);
+  const attempts = [];
+
+  for (const name of order) {
+    const provider = PROVIDERS[name];
+    const apiKey = provider.key();
+
+    if (!apiKey) {
+      attempts.push({
+        provider: name,
+        label: provider.label,
+        ok: false,
+        skipped: true,
+        status: 0,
+        kind: 'not_configured',
+        ms: 0,
+        message: 'کلید API تنظیم نشده',
+      });
+      continue;
+    }
+
+    const budget = providerBudget(timeoutMs, options.deadline);
+    // Only a shrinking turn budget stops the chain: an explicitly short
+    // per-request timeout is the caller's choice and still gets a try.
+    if (Number.isFinite(options.deadline) && budget < MIN_PROVIDER_BUDGET_MS) {
+      attempts.push({
+        provider: name,
+        label: provider.label,
+        ok: false,
+        skipped: false,
+        status: 0,
+        kind: 'budget',
+        ms: 0,
+        message: 'زمان نوبت پیش از رسیدن به این ارائه‌دهنده تمام شد',
+      });
+      continue;
+    }
+
+    const models = options.models && typeof options.models === 'object' ? options.models : {};
+    const model = models[name] || (name === order[0] ? options.model : '') || provider.model();
+    const startedAt = Date.now();
+
+    try {
+      const built = provider.build(messages, systemPrompt, {
+        ...options,
+        apiKey,
+        model,
+        temperature: options.temperature ?? settings.aiTemperature,
+        maxOutputTokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
+      });
+      const data = await postJson(built.url, {
+        headers: built.headers,
+        body: built.body,
+        providerName: name,
+        timeoutMs: budget,
+      });
+      const parsed = provider.parse(data);
+      attempts.push({
+        provider: name,
+        label: provider.label,
+        ok: true,
+        skipped: false,
+        status: 200,
+        kind: 'ok',
+        ms: Date.now() - startedAt,
+        message: '',
+      });
+      return {
+        text: parsed.text,
+        provider: name,
+        providerLabel: provider.label,
+        model: parsed.model || model,
+        usage: parsed.usage || null,
+        finishReason: parsed.finishReason || null,
+        attempts,
+      };
+    } catch (err) {
+      const error = asProviderError(err, name);
+      logFailure(name, provider, error);
+      attempts.push({
+        provider: name,
+        label: provider.label,
+        ok: false,
+        skipped: false,
+        status: error.status || 0,
+        kind: error.kind,
+        ms: Date.now() - startedAt,
+        message: redactSecrets(error.message),
+      });
+    }
+  }
+
+  throw allProvidersFailed(attempts);
+}
+
+/** One comprehensive error: what each provider said, and what to do next. */
+function allProvidersFailed(attempts) {
+  const tried = attempts.filter((attempt) => !attempt.skipped);
+  const noKeys = attempts.length > 0 && tried.length === 0;
+
+  if (!attempts.length) {
+    return new AiError('🤖 هیچ ارائه‌دهنده‌ای در AI_FALLBACK_ORDER تعریف نشده است.', {
+      status: 503,
+      attempts,
+    });
+  }
+
+  const message = noKeys
+    ? '🤖 هیچ کلید هوش مصنوعی تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY را در tgcloud/lib/config.js بگذارید.'
+    : [
+        `🤖 هیچ‌کدام از ${attempts.length} ارائه‌دهنده پاسخ ندادند.`,
+        ...attempts.map((attempt) => `• ${attempt.label}: ${attempt.message || attempt.kind}`),
+        'کلیدها و سهمیه‌ها را در tgcloud/lib/config.js بررسی کنید (AI_FALLBACK_ORDER).',
+      ].join('\n');
+
+  return new AiError(truncate(message, 1200), { status: 503, retryable: true, attempts });
+}
+
+/**
+ * Low-level completion in the internal turn format.
+ * @param {{role:'user'|'model'|'assistant',text:string}[]} turns
+ * @param {object} options  see generateWithFallback
+ */
+export async function generate(turns, options = {}) {
+  const messages = (turns || []).map((turn) => ({
+    role: turn.role === 'model' ? 'assistant' : turn.role,
+    content: String(turn.text ?? turn.content ?? ''),
+  }));
+  return generateWithFallback(messages, options.system || '', {
+    providers: options.providers,
+    timeoutMs: options.timeoutMs,
+    deadline: options.deadline,
+    model: options.model,
+    models: options.models,
+    temperature: options.temperature,
+    maxOutputTokens: options.maxOutputTokens,
+  });
 }
 
 /** Turn stored rows into alternating turns, merging consecutive same-role items. */
@@ -144,8 +668,8 @@ export function toTurns(messages) {
     if (last && last.role === role) last.text += `\n\n${text}`;
     else turns.push({ role, text });
   }
-  // Gemini expects a user turn first; a history that starts with the model is
-  // legal but wastes a turn, so drop the leading model message.
+  // The model expects a user turn first; a history that starts with the model
+  // is legal but wastes a turn, so drop the leading model message.
   while (turns.length && turns[0].role === 'model') turns.shift();
   return turns;
 }
@@ -234,6 +758,7 @@ export async function runAgent({
   const turns = toTurns([...history, { role: 'user', content: prompt }]);
   const events = [];
   const pending = [];
+  const attempts = [];
   const maxSteps = settings.maxAgentSteps;
   // Endpoints have a wall-clock limit. Stop starting new model round-trips
   // when the turn is close to it; the answer gathered so far is returned
@@ -241,7 +766,8 @@ export async function runAgent({
   const deadline = Date.now() + budgetMs;
   const timeLeft = () => deadline - Date.now();
 
-  let modelResult = await generate(turns, { system: SYSTEM_PROMPT });
+  let modelResult = await generate(turns, { system: SYSTEM_PROMPT, deadline });
+  attempts.push(...(modelResult.attempts || []));
   let finalText = modelResult.text;
 
   for (let step = 0; step < maxSteps; step++) {
@@ -261,7 +787,7 @@ export async function runAgent({
         outcome = {
           ok: false,
           needsApproval: true,
-          error: 'در انتظار تأیید کاربر؛ عملیات اجرا نشد. به کاربر بگو با دکمه تأیید در مینیاپ آن را اجرا کند.',
+          error: 'در انتظار تأیید کاربر؛ عملیات اجرا نشد. به کاربر بگو با دکمه تأیید در مینی‌اپ آن را اجرا کند.',
         };
       } else {
         try {
@@ -287,7 +813,8 @@ export async function runAgent({
     turns.push({ role: 'user', text: SUMMARY_INSTRUCTION });
 
     if (timeLeft() < MIN_STEP_MS) break;
-    modelResult = await generate(turns, { system: SYSTEM_PROMPT });
+    modelResult = await generate(turns, { system: SYSTEM_PROMPT, deadline });
+    attempts.push(...(modelResult.attempts || []));
     finalText = modelResult.text;
   }
 
@@ -298,6 +825,10 @@ export async function runAgent({
     pending,
     model: modelResult.model,
     usage: modelResult.usage,
+    // Which provider wrote the last answer, and every attempt of this turn.
+    provider: modelResult.provider || null,
+    providerLabel: modelResult.providerLabel || null,
+    attempts,
   };
 }
 

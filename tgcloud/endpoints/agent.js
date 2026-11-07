@@ -1,14 +1,19 @@
 // tgcloud/endpoints/agent.js — the Mini App's main entry point.
 //
 // Request:  { prompt: string, chatId?: number }
-// Response: { output, actions, pending, usage, historyId }
+// Response: { output, provider, providerLabel, providers[], actions, pending,
+//             usage, model, historyId }
 //
 // The caller is identified only by the platform-verified init data. Any write
 // action the model requested is either executed and logged, or (for
 // destructive ones) returned as a `pending` approval the UI must confirm.
+//
+// `provider` is the model that actually answered (gemini · grok · deepseek);
+// `providers` carries the same information per provider plus the ones that
+// failed over this request, so the status bar can paint green/red badges.
 
 import { EndpointError } from 'sdk';
-import { runAgent, isConfigured as aiConfigured } from '../lib/ai.js';
+import { runAgent, isConfigured as aiConfigured, summariseAttempts, providerCatalog } from '../lib/ai.js';
 import { ensureChat, addMessage, recentMessages } from '../lib/store.js';
 import { isUserAllowed, ACCESS_DENIED_MESSAGE, MAX_PROMPT_LENGTH, redactSecrets } from '../lib/security.js';
 import { createApproval, needsApproval } from '../lib/approvals.js';
@@ -19,8 +24,8 @@ import { settings } from '../lib/settings.js';
  * other exception becomes a generic 500. `code` travels in `parameters` so the
  * UI can branch on it; `status` is advisory metadata for the client.
  */
-function fail(description, code, status = 400) {
-  return new EndpointError(description, { code, status });
+function fail(description, code, status = 400, parameters = {}) {
+  return new EndpointError(description, { code, status, ...parameters });
 }
 
 export default async function agentEndpoint(input, ctx) {
@@ -35,7 +40,12 @@ export default async function agentEndpoint(input, ctx) {
     throw fail(`متن درخواست بیش از حد طولانی است (حداکثر ${MAX_PROMPT_LENGTH} کاراکتر).`, 'PROMPT_TOO_LONG');
   }
   if (!aiConfigured()) {
-    throw fail('کلید Gemini روی سرور تنظیم نشده است. GEMINI_API_KEY را در tgcloud/lib/config.js بگذارید.', 'AI_NOT_CONFIGURED', 503);
+    throw fail(
+      'هیچ کلید هوش مصنوعی روی سرور تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY را در tgcloud/lib/config.js بگذارید.',
+      'AI_NOT_CONFIGURED',
+      503,
+      { providers: providerCatalog() }
+    );
   }
 
   const chat = await ensureChat({ userId, chatId: input?.chatId ?? null, title: prompt });
@@ -53,8 +63,12 @@ export default async function agentEndpoint(input, ctx) {
     });
   } catch (err) {
     // The turn failed: keep the user's message, tell them why, do not store
-    // an empty assistant reply.
-    throw fail(redactSecrets(err?.message || 'خطای نامشخص در تماس با مدل'), 'AI_ERROR', 502);
+    // an empty assistant reply. Per-provider details travel along so the UI
+    // can mark the badges that were tried.
+    throw fail(redactSecrets(err?.message || 'خطای نامشخص در تماس با مدل'), 'AI_ERROR', 502, {
+      attempts: err?.attempts || null,
+      providers: summariseAttempts(err?.attempts || [], null),
+    });
   }
 
   const reply = result.reply || '✅ انجام شد.';
@@ -69,6 +83,11 @@ export default async function agentEndpoint(input, ctx) {
 
   return {
     output: reply,
+    // Which model wrote this answer — the Mini App shows it as
+    // "[System: Handled by Grok 🚀]".
+    provider: result.provider || null,
+    providerLabel: result.providerLabel || null,
+    providers: summariseAttempts(result.attempts, result.provider),
     historyId: assistantRow.id,
     actions: (result.actions || []).map((event) => ({
       service: event.service,

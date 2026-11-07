@@ -16,13 +16,50 @@ const int = (value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) =
   return Math.min(Math.max(Math.floor(n), min), max);
 };
 
+const num = (value, fallback) => (Number.isFinite(Number(value)) && value !== '' && value !== null ? Number(value) : fallback);
+
 const bool = (value, fallback) => (typeof value === 'boolean' ? value : fallback);
+
+const url = (value, fallback) => (str(value) || fallback).replace(/\/+$/, '');
 
 /** Telegram user ids from config, accepting numbers or numeric strings. */
 const idList = (value) =>
   (Array.isArray(value) ? value : [])
     .map((item) => Number(item))
     .filter((item) => Number.isFinite(item) && item > 0);
+
+/** Every provider name the failover chain understands, in canonical form. */
+export const AI_PROVIDERS = ['gemini', 'grok', 'deepseek'];
+
+/** Aliases accepted in AI_FALLBACK_ORDER (people write 'xai', 'google', …). */
+const PROVIDER_ALIASES = {
+  gemini: 'gemini',
+  google: 'gemini',
+  'google-gemini': 'gemini',
+  grok: 'grok',
+  xai: 'grok',
+  'x-ai': 'grok',
+  'x.ai': 'grok',
+  deepseek: 'deepseek',
+  'deep-seek': 'deepseek',
+};
+
+const DEFAULT_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek'];
+
+/**
+ * Normalise AI_FALLBACK_ORDER: lowercase, resolve aliases, drop names we do
+ * not implement, drop duplicates. An empty/absent value means the default
+ * order, so an older config.js keeps working.
+ */
+export function normaliseFallbackOrder(value) {
+  const source = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  const order = [];
+  for (const raw of source) {
+    const name = PROVIDER_ALIASES[String(raw ?? '').toLowerCase().trim()];
+    if (name && !order.includes(name)) order.push(name);
+  }
+  return order.length ? order : [...DEFAULT_FALLBACK_ORDER];
+}
 
 /** A service-account key can be an object or a JSON string; normalise to an object. */
 function serviceAccount(raw) {
@@ -43,12 +80,44 @@ function normaliseAccount(account) {
   return copy;
 }
 
+// Generation knobs: the AI_* names win, GEMINI_* keeps older configs working.
+const temperature = num(
+  config.AI_TEMPERATURE ?? config.GEMINI_TEMPERATURE,
+  0.7
+);
+const maxOutputTokens = int(
+  config.AI_MAX_OUTPUT_TOKENS ?? config.GEMINI_MAX_OUTPUT_TOKENS,
+  8192,
+  { min: 512, max: 65536 }
+);
+
 export const settings = {
-  // AI
+  // ── AI: Google Gemini ────────────────────────────────────────────────────
   geminiApiKey: str(config.GEMINI_API_KEY),
   geminiModel: str(config.GEMINI_MODEL) || 'gemini-3.5-flash',
-  geminiTemperature: Number.isFinite(Number(config.GEMINI_TEMPERATURE)) ? Number(config.GEMINI_TEMPERATURE) : 0.7,
-  geminiMaxOutputTokens: int(config.GEMINI_MAX_OUTPUT_TOKENS, 8192, { min: 512, max: 65536 }),
+  geminiBaseUrl: url(config.GEMINI_BASE_URL, 'https://generativelanguage.googleapis.com/v1beta'),
+
+  // ── AI: xAI Grok (OpenAI compatible) ─────────────────────────────────────
+  xaiApiKey: str(config.XAI_API_KEY),
+  xaiModel: str(config.XAI_MODEL) || 'grok-4-fast-non-reasoning',
+  xaiBaseUrl: url(config.XAI_BASE_URL, 'https://api.x.ai/v1'),
+
+  // ── AI: DeepSeek (OpenAI compatible) ─────────────────────────────────────
+  deepseekApiKey: str(config.DEEPSEEK_API_KEY),
+  deepseekModel: str(config.DEEPSEEK_MODEL) || 'deepseek-chat',
+  deepseekBaseUrl: url(config.DEEPSEEK_BASE_URL, 'https://api.deepseek.com'),
+
+  // ── AI: failover ─────────────────────────────────────────────────────────
+  // Tried left to right; providers without a key are skipped.
+  aiFallbackOrder: normaliseFallbackOrder(config.AI_FALLBACK_ORDER),
+  // Per-provider deadline; a hanging provider is aborted and the next runs.
+  aiTimeoutMs: int(config.AI_TIMEOUT_MS, 15000, { min: 1000, max: 60000 }),
+  aiTemperature: temperature,
+  aiMaxOutputTokens: maxOutputTokens,
+
+  // Kept for modules/tests written before the failover layer existed.
+  geminiTemperature: temperature,
+  geminiMaxOutputTokens: maxOutputTokens,
 
   // GitHub
   githubToken: str(config.GITHUB_TOKEN),
@@ -58,7 +127,7 @@ export const settings = {
   // GitLab
   gitlabToken: str(config.GITLAB_TOKEN),
   gitlabDefaultProject: str(config.GITLAB_DEFAULT_PROJECT),
-  gitlabBaseUrl: (str(config.GITLAB_BASE_URL) || 'https://gitlab.com').replace(/\/+$/, ''),
+  gitlabBaseUrl: url(config.GITLAB_BASE_URL, 'https://gitlab.com'),
   gitlabDefaultBranch: str(config.GITLAB_DEFAULT_BRANCH) || 'main',
 
   // Google
@@ -77,21 +146,50 @@ export const settings = {
   timezone: str(config.TIMEZONE) || 'UTC',
 };
 
+/** The API key a provider name maps to (never returned to a client). */
+export function providerKey(name) {
+  switch (name) {
+    case 'gemini': return settings.geminiApiKey;
+    case 'grok': return settings.xaiApiKey;
+    case 'deepseek': return settings.deepseekApiKey;
+    default: return '';
+  }
+}
+
+/** The model id a provider name maps to. */
+export function providerModel(name) {
+  switch (name) {
+    case 'gemini': return settings.geminiModel;
+    case 'grok': return settings.xaiModel;
+    case 'deepseek': return settings.deepseekModel;
+    default: return '';
+  }
+}
+
 /** True when the key required for a service is present. Never exposes it. */
 export function isConfigured(service) {
   switch (service) {
     case 'github': return Boolean(settings.githubToken);
     case 'gitlab': return Boolean(settings.gitlabToken);
     case 'gdrive': return Boolean(settings.googleServiceAccount?.client_email && settings.googleServiceAccount?.private_key);
-    case 'gemini': return Boolean(settings.geminiApiKey);
+    case 'gemini':
+    case 'grok':
+    case 'deepseek': return Boolean(providerKey(service));
     default: return false;
   }
+}
+
+/** Provider names that have a key, in failover order. */
+export function configuredProviders() {
+  return settings.aiFallbackOrder.filter((name) => Boolean(providerKey(name)));
 }
 
 /** Which integrations have credentials configured (values never returned). */
 export function integrationStatus() {
   return {
     gemini: isConfigured('gemini'),
+    grok: isConfigured('grok'),
+    deepseek: isConfigured('deepseek'),
     github: isConfigured('github'),
     gitlab: isConfigured('gitlab'),
     gdrive: isConfigured('gdrive'),

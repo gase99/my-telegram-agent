@@ -7,7 +7,7 @@ dark "hacker terminal" Mini App.
 
 ```
 Telegram chat ──► tgcloud/handlers/message.js ──┐
-                                                ├──► lib/ai.js (Gemini)
+                                                ├──► lib/ai.js (failover)
 Mini App (miniapp/) ──► tgcloud/endpoints/*.js ─┘        │
                                                           ▼
                                     lib/actions.js (whitelist)
@@ -39,7 +39,7 @@ tgcloud/
   lib/
     config.example.js         template — copy to config.js
     settings.js               single reader of config.js, with defaults
-    ai.js                     Gemini client + agent loop (plan → act → summarise)
+    ai.js                     Gemini/Grok/DeepSeek transport + failover + agent loop
     prompt.js                 system prompt + action protocol + action catalog
     actions.js                whitelist + executor (the trust boundary)
     github.js  gitlab.js  gdrive.js
@@ -68,7 +68,10 @@ Fill in `tgcloud/lib/config.js` (it is gitignored — never commit it):
 | Key | Where to get it |
 |-----|-----------------|
 | `GEMINI_API_KEY` | https://aistudio.google.com/apikey |
-| `GEMINI_MODEL` | default `gemini-3.5-flash` (see comment in the file) |
+| `XAI_API_KEY` | https://console.x.ai — Grok (OpenAI-compatible) |
+| `DEEPSEEK_API_KEY` | https://platform.deepseek.com/api_keys |
+| `AI_FALLBACK_ORDER` | default `['gemini', 'grok', 'deepseek']` — the order providers are tried in |
+| `GEMINI_MODEL` / `XAI_MODEL` / `DEEPSEEK_MODEL` | model ids; defaults are in the template |
 | `GITHUB_TOKEN` | classic token with `repo` + `workflow`, or fine-grained Contents/PR/Actions RW |
 | `GITHUB_DEFAULT_REPO` | `owner/name` used when the user does not name a repo |
 | `GITLAB_TOKEN`, `GITLAB_DEFAULT_PROJECT` | GitLab PAT with `api` scope |
@@ -87,6 +90,27 @@ npx tgcloud migrate         # apply the schema (push never does)
 
 Then send `/start` to the bot: the button opens the Mini App, and the chat menu
 button is set to it as well.
+
+## Model failover
+
+One turn is answered by the first provider in `AI_FALLBACK_ORDER` that works:
+
+```
+gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► deepseek ──► one error
+```
+
+- a provider call is **one** attempt: no retries, so a rate-limited provider is
+  skipped immediately instead of eating the next provider's time;
+- a call that hangs for more than `AI_TIMEOUT_MS` (default **15s**) is aborted
+  (`AbortController`) and the next provider runs;
+- an OpenAI-compatible provider answers through the same neutral prompt: the
+  adapters in `lib/ai.js` convert it to `contents`/`parts` for Gemini and to
+  `messages`/`max_tokens` with `Authorization: Bearer <key>` for Grok and DeepSeek;
+- the Mini App shows `[System: Handled by Grok 🚀]` under the answer, paints the
+  answering badge green and the failed-over ones red, and the bot adds a short
+  "🔁 پاسخ از X آمد" line when a fallback happened;
+- if every provider fails, the turn raises one error that lists what each
+  provider said, with keys redacted.
 
 ## How the agent executes real work
 
@@ -115,7 +139,7 @@ Open it from the bot. It provides:
 
 - a scrolling terminal with markdown-ish rendering, syntax-tinted code blocks and copy buttons
 - a typing indicator while the agent works, plus one line per executed operation
-- connection badges (GitHub / GitLab / Drive / Gemini) that probe the real APIs
+- connection badges (GitHub / GitLab / Drive) that probe the real APIs, plus live **AI provider badges** (Gemini · Grok · DeepSeek): green for the model that answered the last request, red for the ones that failed over, faded when no key is configured
 - approval cards for destructive actions, a quick-command panel, JSON history export
 - safe-area handling, keyboard-aware layout, haptics, and a message queue so nothing typed is lost
 
@@ -125,7 +149,7 @@ which sends the verified init data; the Mini App never sees a token or key.
 ## Tests
 
 ```bash
-npm test        # 34 tests, offline: links tests/stubs/sdk and runs node:test
+npm test        # 43 tests, offline: links tests/stubs/sdk and runs node:test
 ```
 
 The suite covers base64/UTF-8 round-trips, SHA-256 and RSA vectors, the action
