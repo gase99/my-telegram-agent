@@ -13,7 +13,7 @@
 // order of AI_FALLBACK_ORDER below. A provider that answers 429 / 403 / 5xx,
 // hangs for longer than AI_TIMEOUT_MS, or returns an empty answer is logged
 // and skipped, and the next provider answers instead. `lib/ai.js` holds the
-// adapters (Gemini uses `contents`/`parts`; Grok and DeepSeek are
+// adapters (Gemini uses `contents`/`parts`; Grok, DeepSeek and Kimi are
 // OpenAI-compatible and use `messages`).
 
 // Google Gemini — https://aistudio.google.com/apikey
@@ -42,10 +42,22 @@ export const DEEPSEEK_API_KEY = '';
 export const DEEPSEEK_MODEL = 'deepseek-flash';
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
-// Which provider answers first. Names: 'gemini' | 'grok' | 'deepseek'
-// ('xai' is accepted as an alias for 'grok'). Unknown names are ignored and
-// providers without a key are skipped without counting as a failure.
-export const AI_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek'];
+// Moonshot AI — Kimi (OpenAI compatible) — https://platform.kimi.ai (a.k.a.
+// platform.moonshot.ai). Endpoint: {KIMI_BASE_URL}/chat/completions
+// (Authorization: Bearer <key>). Keys look like `sk-…`.
+// K2.6+ and K3 are reasoning models and think by default; the adapter asks for
+// "instant mode" (`thinking: { type: 'disabled' }`) so the hop fits
+// AI_TIMEOUT_MS. `kimi-k2.6` is the general model, `kimi-k2.7-code` the coding
+// specialist, `kimi-k3` the flagship. `MOONSHOT_API_KEY` is an accepted alias.
+export const MOONSHOT_API_KEY = '';
+export const KIMI_MODEL = 'kimi-k2.6';
+export const KIMI_BASE_URL = 'https://api.moonshot.ai/v1';
+
+// Which provider answers first. Names: 'gemini' | 'grok' | 'deepseek' | 'kimi'
+// ('xai'/'moonshot' are accepted as aliases for 'grok'/'kimi'). Unknown names
+// are ignored and providers without a key are skipped without counting as a
+// failure, so a short list is fine.
+export const AI_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek', 'kimi'];
 // Gemini 3+ replaced the numeric thinking budget with a discrete level:
 // 'minimal' | 'low' | 'medium' | 'high'. 'low' keeps an agent turn inside the
 // 15s provider deadline while still planning multi-step work. Older Gemini

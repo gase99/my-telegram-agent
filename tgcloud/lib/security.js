@@ -13,6 +13,8 @@ const SECRET_CONFIG_KEYS = [
   'GEMINI_API_KEY',
   'XAI_API_KEY',
   'DEEPSEEK_API_KEY',
+  'MOONSHOT_API_KEY',
+  'KIMI_API_KEY',
   'GITHUB_TOKEN',
   'GITLAB_TOKEN',
 ];
@@ -24,7 +26,7 @@ const SECRET_PATTERNS = [
   /\bglpat-[A-Za-z0-9_-]{16,}\b/g, // GitLab personal access tokens
   /\bAIza[0-9A-Za-z_-]{30,}\b/g, // Google API keys
   /\bxai-[0-9A-Za-z_-]{20,}\b/g, // xAI (Grok) API keys
-  /\bsk-[0-9A-Za-z_-]{20,}\b/g, // OpenAI-compatible keys (DeepSeek, …)
+  /\bsk-[0-9A-Za-z_-]{20,}\b/g, // OpenAI-compatible keys (DeepSeek, Kimi, …)
   /\bya29\.[0-9A-Za-z_-]{20,}\b/g, // Google OAuth tokens
   /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, // Bot API token "<bot_id>:<secret>"
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
@@ -36,6 +38,9 @@ function knownSecrets() {
     settings.geminiApiKey,
     settings.xaiApiKey,
     settings.deepseekApiKey,
+    // Kimi (Moonshot) keys look like `sk-…`, which the pattern below already
+    // covers; registering the configured value also masks any other shape.
+    settings.moonshotApiKey,
     settings.githubToken,
     settings.gitlabToken,
     settings.googleServiceAccount?.private_key,

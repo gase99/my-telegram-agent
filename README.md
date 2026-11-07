@@ -70,8 +70,9 @@ Fill in `tgcloud/lib/config.js` (it is gitignored — never commit it):
 | `GEMINI_API_KEY` | https://aistudio.google.com/apikey |
 | `XAI_API_KEY` | https://console.x.ai — Grok (OpenAI-compatible) |
 | `DEEPSEEK_API_KEY` | https://platform.deepseek.com/api_keys |
-| `AI_FALLBACK_ORDER` | default `['gemini', 'grok', 'deepseek']` — the order providers are tried in |
-| `GEMINI_MODEL` / `XAI_MODEL` / `DEEPSEEK_MODEL` | model ids; defaults `gemini-3.5-flash` / `grok-4.3` / `deepseek-flash` |
+| `MOONSHOT_API_KEY` | https://platform.kimi.ai — Kimi (OpenAI-compatible; `KIMI_API_KEY` is accepted as an alias) |
+| `AI_FALLBACK_ORDER` | default `['gemini', 'grok', 'deepseek', 'kimi']` — the order providers are tried in |
+| `GEMINI_MODEL` / `XAI_MODEL` / `DEEPSEEK_MODEL` / `KIMI_MODEL` | model ids; defaults `gemini-3.5-flash` / `grok-4.3` / `deepseek-flash` / `kimi-k2.6` |
 | `AI_THINKING_LEVEL` | Gemini 3+ thinking level: `minimal` · `low` (default) · `medium` · `high` |
 | `GITHUB_TOKEN` | classic token with `repo` + `workflow`, or fine-grained Contents/PR/Actions RW |
 | `GITHUB_DEFAULT_REPO` | `owner/name` used when the user does not name a repo |
@@ -97,8 +98,13 @@ button is set to it as well.
 One turn is answered by the first provider in `AI_FALLBACK_ORDER` that works:
 
 ```
-gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► deepseek ──► one error
+gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► deepseek ──► kimi ──► one error
 ```
+
+Adding a key is enough: a provider that is not named in `AI_FALLBACK_ORDER`
+(a `config.js` written before Kimi existed) is appended after the configured
+ones, so `MOONSHOT_API_KEY` alone puts Kimi last in the chain. Name it in the
+order to pick its position.
 
 - a provider call is **one** attempt: no retries, so a rate-limited provider is
   skipped immediately instead of eating the next provider's time;
@@ -106,7 +112,8 @@ gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► de
   (`AbortController`) and the next provider runs;
 - an OpenAI-compatible provider answers through the same neutral prompt: the
   adapters in `lib/ai.js` convert it to `contents`/`parts` for Gemini and to
-  `messages`/`max_tokens` with `Authorization: Bearer <key>` for Grok and DeepSeek;
+  `messages`/`max_tokens` with `Authorization: Bearer <key>` for Grok, DeepSeek
+  and Kimi;
 - the Mini App shows `[System: Handled by Grok 🚀]` under the answer, paints the
   answering badge green and the failed-over ones red, and the bot adds a short
   "🔁 پاسخ از X آمد" line when a fallback happened;
@@ -114,11 +121,13 @@ gemini ──429/403/5xx/timeout──► grok ──403/5xx/timeout──► de
   provider said, with keys redacted;
 - the provider adapters track each vendor's current API: Gemini 3+ uses
   `thinkingLevel` (numeric `thinkingBudget` is deprecated and can 400) and no
-  custom sampling since 3.6, and DeepSeek is asked for a non-thinking answer so
-  a failover hop fits in `AI_TIMEOUT_MS`;
+  custom sampling since 3.6; DeepSeek V4 and Kimi K2.6+ think by default, so
+  they are asked for a non-thinking answer (`thinking: { type: 'disabled' }`,
+  "instant mode" on Moonshot) to keep a failover hop inside `AI_TIMEOUT_MS`;
+  Grok rejects unknown fields and never receives that switch;
 - `/status` and the Mini App warn when a model id in `config.js` has been
-  retired by its provider (`grok-4-fast-*`, `deepseek-chat`, …) instead of
-  letting the first request fail with a 404.
+  retired by its provider (`grok-4-fast-*`, `deepseek-chat`, `kimi-k2-preview`, …)
+  instead of letting the first request fail with a 404.
 
 A turn never loses executed work: if the wall-clock budget runs out, the model
 loop hits `MAX_AGENT_STEPS`, or the summarising call fails, the reply is built

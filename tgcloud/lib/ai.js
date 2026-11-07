@@ -17,7 +17,8 @@
 // Transport rules:
 //   • every call goes out through `fetch` from `sdk` — no client libraries;
 //   • a key never travels in a URL: Gemini uses the `x-goog-api-key` header,
-//     Grok and DeepSeek (OpenAI-compatible) use `Authorization: Bearer <key>`;
+//     Grok, DeepSeek and Kimi (OpenAI-compatible) use `Authorization: Bearer
+//     <key>`;
 //   • a provider that answers 401/403/404/429/5xx, hangs for AI_TIMEOUT_MS
 //     (default 15s) or returns an empty/blocked answer is logged, recorded,
 //     and the next provider in AI_FALLBACK_ORDER answers instead;
@@ -178,18 +179,28 @@ export function toOpenAIRequest(messages, systemPrompt = '', options = {}) {
       stream: false,
       temperature: options.temperature ?? settings.aiTemperature,
       max_tokens: options.maxOutputTokens ?? settings.aiMaxOutputTokens,
-      // DeepSeek V4 defaults to *thinking* mode, which is both slower than the
-      // 15s failover deadline and billed as output. The chain is a latency
-      // fallback, so it explicitly asks for the non-thinking answer. `xai`
-      // models treat unknown fields as errors, so this is DeepSeek-only.
-      ...(options.thinking === false && isDeepSeekModel(model) ? { thinking: { type: 'disabled' } } : {}),
+      // DeepSeek V4 and Kimi K2.6+ default to *thinking* mode, which is both
+      // slower than the 15s failover deadline and billed as output. The chain
+      // is a latency fallback, so it explicitly asks for the non-thinking
+      // answer ("instant mode" on Moonshot). `xai` models treat unknown fields
+      // as errors, so the switch is vendor-gated.
+      ...(options.thinking === false && supportsThinkingSwitch(model)
+        ? { thinking: { type: 'disabled' } }
+        : {}),
     },
   };
 }
 
-/** DeepSeek's OpenAI-compatible models (`deepseek-flash`, `deepseek-v4-pro`, …). */
-function isDeepSeekModel(model) {
-  return /^deepseek/i.test(String(model || ''));
+/**
+ * Vendors that accept the OpenAI-extension `thinking: { type }` field to turn
+ * reasoning off: DeepSeek V4+ and Moonshot Kimi K2.6+.
+ * DeepSeek ids: `deepseek-flash`, `deepseek-v4-pro`, …
+ * Kimi ids:     `kimi-k2.6`, `kimi-k3`, `kimi-k2.7-code`, …
+ * Grok/xAI rejects unknown fields, so it must never get this one.
+ */
+function supportsThinkingSwitch(model) {
+  const id = String(model || '');
+  return /^deepseek/i.test(id) || /^kimi/i.test(id);
 }
 
 /** Gemini response → neutral result. */
@@ -335,6 +346,23 @@ const PROVIDERS = {
       }),
     parse: (data) => parseOpenAIResponse(data, 'deepseek'),
   },
+  kimi: {
+    // Moonshot AI's Kimi. Same OpenAI-compatible shape as Grok and DeepSeek,
+    // so the adapter is shared; only the base URL and the thinking switch
+    // differ (K2.6+ thinks by default, exactly like DeepSeek V4).
+    label: 'Kimi',
+    emoji: '🌙',
+    key: () => settings.moonshotApiKey,
+    model: () => settings.kimiModel,
+    build: (messages, system, options) =>
+      toOpenAIRequest(messages, system, {
+        ...options,
+        apiKey: options.apiKey ?? settings.moonshotApiKey,
+        baseUrl: settings.kimiBaseUrl,
+        thinking: false,
+      }),
+    parse: (data) => parseOpenAIResponse(data, 'kimi'),
+  },
 };
 
 /** True when at least one provider has a key. */
@@ -348,14 +376,32 @@ export function fallbackOrder(order = settings.aiFallbackOrder) {
     .map((name) => String(name).toLowerCase().trim())
     .filter((name) => PROVIDERS[name]);
   const unique = [...new Set(names)];
-  return unique.length ? unique : settings.aiFallbackOrder.filter((name) => PROVIDERS[name]);
+  if (unique.length) return unique;
+  const fallback = settings.aiFallbackOrder.filter((name) => PROVIDERS[name]);
+  // A config older than the provider registry states no usable order at all.
+  return fallback.length ? fallback : [...AI_PROVIDERS];
+}
+
+/**
+ * The providers a request will actually walk through: the explicit order
+ * first, then any provider that has a key but is missing from it.
+ *
+ * Why: `AI_FALLBACK_ORDER` in a deployed `config.js` may predate a provider
+ * (Kimi was added after the first three). Without this, pasting
+ * MOONSHOT_API_KEY into an old config would silently never be tried. An
+ * explicit position still wins, so a hand-written order is never overturned.
+ */
+function chainFor(order) {
+  const explicit = fallbackOrder(order);
+  const rest = AI_PROVIDERS.filter((name) => !explicit.includes(name) && Boolean(providerKey(name)));
+  return [...explicit, ...rest];
 }
 
 /** Everything the status bar needs to draw the model badges. */
 export function providerCatalog() {
   // A retired id answers 404 mid-conversation; say so up front instead.
   const retired = new Map(retiredModels().map((item) => [item.provider, item]));
-  return fallbackOrder().map((name) => {
+  return chainFor().map((name) => {
     const stale = retired.get(name);
     return {
       name,
@@ -377,7 +423,7 @@ export function providerCatalog() {
  *   idle    — configured, not needed this time
  */
 export function summariseAttempts(attempts = [], usedProvider = null) {
-  return fallbackOrder().map((name) => {
+  return chainFor().map((name) => {
     const provider = PROVIDERS[name];
     const seen = (attempts || []).filter((attempt) => attempt?.provider === name);
     const last = seen[seen.length - 1] || null;
@@ -586,7 +632,10 @@ function logFailure(name, provider, error) {
  *                     attempts:object[] }>}
  */
 export async function generateWithFallback(messages, systemPrompt = '', options = {}) {
-  const order = fallbackOrder(options.providers ?? settings.aiFallbackOrder);
+  // Only an explicit per-call list is authoritative; otherwise the configured
+  // order is extended with every keyed provider so a newer provider is not
+  // silently ignored by a stale config.
+  const order = options.providers ? fallbackOrder(options.providers) : chainFor();
   const timeoutMs = clampTimeout(options.timeoutMs ?? settings.aiTimeoutMs);
   const attempts = [];
 
@@ -695,7 +744,7 @@ function allProvidersFailed(attempts) {
   }
 
   const message = noKeys
-    ? '🤖 هیچ کلید هوش مصنوعی تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY را در tgcloud/lib/config.js بگذارید.'
+    ? '🤖 هیچ کلید هوش مصنوعی تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY / MOONSHOT_API_KEY را در tgcloud/lib/config.js بگذارید.'
     : [
         `🤖 هیچ‌کدام از ${attempts.length} ارائه‌دهنده پاسخ ندادند.`,
         ...attempts.map((attempt) => `• ${attempt.label}: ${attempt.message || attempt.kind}`),

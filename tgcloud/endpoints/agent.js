@@ -41,7 +41,7 @@ export default async function agentEndpoint(input, ctx) {
   }
   if (!aiConfigured()) {
     throw fail(
-      'هیچ کلید هوش مصنوعی روی سرور تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY را در tgcloud/lib/config.js بگذارید.',
+      'هیچ کلید هوش مصنوعی روی سرور تنظیم نشده است. یکی از GEMINI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY / MOONSHOT_API_KEY را در tgcloud/lib/config.js بگذارید.',
       'AI_NOT_CONFIGURED',
       503,
       { providers: providerCatalog() }

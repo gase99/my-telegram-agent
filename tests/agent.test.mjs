@@ -326,7 +326,7 @@ test('agent endpoint rejects anonymous and empty requests', async () => {
 
 test('agent endpoint reports a missing API key instead of crashing', async () => {
   __resetDatabase();
-  if (settings.geminiApiKey || settings.xaiApiKey || settings.deepseekApiKey) return; // a real key is configured in this checkout
+  if (settings.geminiApiKey || settings.xaiApiKey || settings.deepseekApiKey || settings.moonshotApiKey) return; // a real key is configured in this checkout
   await assert.rejects(() => agentEndpoint({ prompt: 'سلام' }, ctxFor()), (err) => {
     assert.equal(err.code, 'AI_NOT_CONFIGURED');
     return true;
@@ -509,6 +509,7 @@ async function withAi(overrides, fn) {
     geminiApiKey: settings.geminiApiKey,
     xaiApiKey: settings.xaiApiKey,
     deepseekApiKey: settings.deepseekApiKey,
+    moonshotApiKey: settings.moonshotApiKey,
     aiFallbackOrder: settings.aiFallbackOrder,
     aiTimeoutMs: settings.aiTimeoutMs,
   };
@@ -715,6 +716,7 @@ test('summariseAttempts paints active / failed / skipped badges in order', async
         ['grok', 'active'],
         ['deepseek', 'skipped'],
       ]);
+      // The configured order (not the full catalog) is what the badges show.
       assert.equal(providerCatalog().length, 3);
     }
   );
@@ -1018,4 +1020,237 @@ test('the fallback notice names each failed provider once per turn', async () =>
       __setFetchMock(null);
     }
   });
+});
+
+// ── Kimi (Moonshot) as the fourth failover hop ──────────────────────────────
+
+test('Kimi is an OpenAI-compatible provider with its own key and base URL', () => {
+  const request = toOpenAIRequest([{ role: 'user', content: 'hi' }], 'SYS', {
+    model: settings.kimiModel,
+    apiKey: 'sk-moonshot-key-000000000000',
+    baseUrl: settings.kimiBaseUrl,
+  });
+  // Moonshot's documented OpenAI-compatible surface.
+  assert.equal(request.url, `${settings.kimiBaseUrl}/chat/completions`);
+  assert.equal(settings.kimiBaseUrl, 'https://api.moonshot.ai/v1');
+  assert.equal(request.headers.Authorization, 'Bearer sk-moonshot-key-000000000000');
+  assert.deepEqual(request.body.messages.map((m) => m.role), ['system', 'user']);
+});
+
+test('Kimi asks for instant mode; Grok must never receive the thinking field', () => {
+  const kimi = toOpenAIRequest([{ role: 'user', content: 'hi' }], '', {
+    model: 'kimi-k2.6',
+    apiKey: 'k',
+    baseUrl: 'https://api.moonshot.ai/v1',
+    thinking: false,
+  }).body;
+  assert.deepEqual(kimi.thinking, { type: 'disabled' });
+
+  // The flagship and coding ids think by default too.
+  for (const model of ['kimi-k3', 'kimi-k2.7-code']) {
+    const body = toOpenAIRequest([{ role: 'user', content: 'hi' }], '', {
+      model, apiKey: 'k', baseUrl: 'https://api.moonshot.ai/v1', thinking: false,
+    }).body;
+    assert.deepEqual(body.thinking, { type: 'disabled' }, `${model} supports instant mode`);
+  }
+
+  // xAI rejects unknown fields: no switch, even when a caller asks for one.
+  const grok = toOpenAIRequest([{ role: 'user', content: 'hi' }], '', {
+    model: 'grok-4.3', apiKey: 'x', baseUrl: 'https://api.x.ai/v1', thinking: false,
+  }).body;
+  assert.equal(grok.thinking, undefined);
+});
+
+test('failover: Gemini, Grok and DeepSeek all fail → Kimi answers', async () => {
+  await withAi(
+    {
+      geminiApiKey: 'g',
+      xaiApiKey: 'x',
+      deepseekApiKey: 'd',
+      moonshotApiKey: 'sk-moonshot',
+      aiFallbackOrder: ['gemini', 'grok', 'deepseek', 'kimi'],
+    },
+    async () => {
+      const calls = [];
+      __setFetchMock(async (url, init = {}) => {
+        calls.push({ url: String(url), headers: init.headers || {}, body: JSON.parse(init.body || '{}') });
+        const target = String(url);
+        if (target.includes('generativelanguage')) return jsonResponse({ error: { message: 'quota' } }, 429);
+        if (target.includes('api.x.ai')) return jsonResponse({ error: { message: 'down' } }, 503);
+        if (target.includes('api.deepseek.com')) return jsonResponse({ error: { message: 'busy' } }, 403);
+        return jsonResponse({
+          model: 'kimi-k2.6',
+          choices: [{ message: { role: 'assistant', content: 'سلام از Kimi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 2, completion_tokens: 4, total_tokens: 6 },
+        });
+      });
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }], 'SYS');
+        assert.equal(result.provider, 'kimi');
+        assert.equal(result.providerLabel, 'Kimi');
+        assert.equal(result.text, 'سلام از Kimi');
+        // One attempt per provider, no retries.
+        assert.deepEqual(result.attempts.map((a) => [a.provider, a.kind]), [
+          ['gemini', 'rate_limit'],
+          ['grok', 'server'],
+          ['deepseek', 'forbidden'],
+          ['kimi', 'ok'],
+        ]);
+        const kimiCall = calls.find((call) => call.url.includes('moonshot'));
+        assert.equal(kimiCall.url, 'https://api.moonshot.ai/v1/chat/completions');
+        assert.equal(kimiCall.headers.Authorization, 'Bearer sk-moonshot');
+        assert.equal(kimiCall.body.model, 'kimi-k2.6');
+        assert.deepEqual(kimiCall.body.thinking, { type: 'disabled' });
+        // Keys travel in headers, never in the URL.
+        assert.ok(!calls.some((call) => /\?.*key=|sk-moonshot/.test(call.url)));
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('a provider without a key is skipped, never counted as a Kimi failure', async () => {
+  await withAi(
+    {
+      geminiApiKey: '',
+      xaiApiKey: '',
+      deepseekApiKey: '',
+      moonshotApiKey: 'sk-moonshot',
+      aiFallbackOrder: ['gemini', 'grok', 'deepseek', 'kimi'],
+    },
+    async () => {
+      __setFetchMock(async () =>
+        jsonResponse({ choices: [{ message: { content: 'فقط Kimi' }, finish_reason: 'stop' }] })
+      );
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(result.provider, 'kimi');
+        assert.deepEqual(result.attempts.map((a) => a.skipped), [true, true, true, false]);
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+});
+
+test('summariseAttempts and the catalog include Kimi in the badge list', async () => {
+  await withAi(
+    {
+      geminiApiKey: 'g',
+      xaiApiKey: 'x',
+      deepseekApiKey: 'd',
+      moonshotApiKey: 'sk-moonshot',
+      aiFallbackOrder: ['gemini', 'grok', 'deepseek', 'kimi'],
+    },
+    async () => {
+      const badges = summariseAttempts(
+        [
+          { provider: 'gemini', ok: false, status: 429, kind: 'rate_limit', message: 'quota' },
+          { provider: 'grok', ok: false, status: 503, kind: 'server', message: 'down' },
+          { provider: 'deepseek', ok: true, status: 200, kind: 'ok', message: '' },
+        ],
+        'deepseek'
+      );
+      assert.deepEqual(badges.map((b) => [b.name, b.status]), [
+        ['gemini', 'failed'],
+        ['grok', 'failed'],
+        ['deepseek', 'active'],
+        ['kimi', 'idle'], // configured, but the chain never had to reach it
+      ]);
+      assert.equal(badges[3].label, 'Kimi');
+      assert.equal(badges[3].emoji, '🌙');
+
+      const catalog = providerCatalog();
+      assert.deepEqual(catalog.map((p) => p.name), ['gemini', 'grok', 'deepseek', 'kimi']);
+      assert.equal(catalog.find((p) => p.name === 'kimi').configured, true);
+      assert.equal(catalog.find((p) => p.name === 'kimi').model, settings.kimiModel);
+    }
+  );
+});
+
+test('Moonshot aliases resolve to the kimi provider, and a stale id is flagged', async () => {
+  // `moonshot`, `MOONSHOT`, `kimi-k2` all mean the same hop in the order list.
+  await withAi({ aiFallbackOrder: ['kimi', 'moonshot', 'MOONSHOT', 'kimi-k2'] }, async () => {
+    assert.deepEqual(providerCatalog().map((p) => p.name), ['kimi']);
+  });
+
+  await withAi({ moonshotApiKey: 'sk-moonshot' }, async () => {
+    const saved = settings.kimiModel;
+    try {
+      settings.kimiModel = 'kimi-k2-preview';
+      const kimi = providerCatalog().find((p) => p.name === 'kimi');
+      assert.equal(kimi.retiredModel, true);
+      assert.equal(kimi.suggestedModel, 'kimi-k2.6');
+    } finally {
+      settings.kimiModel = saved;
+    }
+  });
+});
+
+test('a keyed provider missing from a stale AI_FALLBACK_ORDER is still tried', async () => {
+  // The realistic upgrade path: config.js predates Kimi, the operator only
+  // pastes MOONSHOT_API_KEY. The hop must still be reachable.
+  await withAi(
+    {
+      geminiApiKey: 'g',
+      xaiApiKey: '',
+      deepseekApiKey: '',
+      moonshotApiKey: 'sk-moonshot',
+      aiFallbackOrder: ['gemini'], // stale: written before Kimi existed
+    },
+    async () => {
+      __setFetchMock(async (url) => {
+        if (String(url).includes('generativelanguage')) return jsonResponse({ error: { message: 'quota' } }, 429);
+        return jsonResponse({ choices: [{ message: { content: 'از Kimi' }, finish_reason: 'stop' }] });
+      });
+      try {
+        const result = await generateWithFallback([{ role: 'user', content: 'hi' }]);
+        assert.equal(result.provider, 'kimi', 'the keyed provider is appended to the configured order');
+        assert.deepEqual(result.attempts.map((a) => a.provider), ['gemini', 'kimi']);
+        assert.deepEqual(providerCatalog().map((p) => p.name), ['gemini', 'kimi']);
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
+
+  // An explicit position always wins over the append.
+  await withAi(
+    { geminiApiKey: 'g', xaiApiKey: 'x', deepseekApiKey: 'd', moonshotApiKey: 'sk-m', aiFallbackOrder: ['kimi', 'gemini'] },
+    async () => {
+      assert.deepEqual(providerCatalog().map((p) => p.name), ['kimi', 'gemini', 'grok', 'deepseek']);
+    }
+  );
+});
+
+test('a Kimi key never reaches an error message or the Mini App payload', async () => {
+  await withAi(
+    {
+      geminiApiKey: '',
+      xaiApiKey: '',
+      deepseekApiKey: '',
+      moonshotApiKey: 'sk-moonshotsecret-abcdefghijklmnop',
+      aiFallbackOrder: ['kimi'],
+    },
+    async () => {
+      __setFetchMock(async () =>
+        jsonResponse({ error: { message: 'Incorrect API key: sk-moonshotsecret-abcdefghijklmnop' } }, 401)
+      );
+      try {
+        await assert.rejects(
+          () => generateWithFallback([{ role: 'user', content: 'hi' }]),
+          (err) => {
+            assert.match(err.message, /Kimi/);
+            assert.ok(!err.message.includes('sk-moonshotsecret-abcdefghijklmnop'), 'key is redacted');
+            assert.equal(err.attempts[0].provider, 'kimi');
+            assert.equal(err.attempts[0].kind, 'auth');
+            return true;
+          }
+        );
+      } finally {
+        __setFetchMock(null);
+      }
+    }
+  );
 });
