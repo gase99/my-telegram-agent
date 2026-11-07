@@ -612,6 +612,7 @@
     <span class="badge model idle" data-model="gemini" title="Gemini"><span class="dot"></span><span class="badge-name">✨ Gemini</span></span>
     <span class="badge model idle" data-model="grok" title="Grok"><span class="dot"></span><span class="badge-name">🚀 Grok</span></span>
     <span class="badge model idle" data-model="deepseek" title="DeepSeek"><span class="dot"></span><span class="badge-name">🐋 DeepSeek</span></span>
+    <span class="badge model idle" data-model="kimi" title="Kimi"><span class="dot"></span><span class="badge-name">🌙 Kimi</span></span>
   </div>
 
   <main id="terminal" role="log" aria-live="polite"></main>
@@ -926,6 +927,7 @@
     gemini: { icon: '✨', name: 'Gemini' },
     grok: { icon: '🚀', name: 'Grok' },
     deepseek: { icon: '🐋', name: 'DeepSeek' },
+    kimi: { icon: '🌙', name: 'Kimi' },
   };
   const MODEL_STATUS_TEXT = {
     active: 'پاسخ این درخواست را داد ✅',
@@ -1031,7 +1033,12 @@
     });
   }
 
-  /** The receipt line printed under an answer: `[System: Handled by Grok 🚀]`. */
+  /**
+   * The receipt line printed under an answer: `[System: Handled by Grok 🚀]`.
+   * When the chain fell over, the providers that were skipped first are named
+   * in the same line (`fallback from Gemini ✨ (rate limit), …`), so a rate
+   * limit is visible in the terminal and not only on the red badge.
+   */
   function handledLine(provider, providerLabel, providers) {
     if (!provider) return '';
     const meta = modelMeta(provider);
@@ -1039,9 +1046,28 @@
     const failed = [...new Set(
       (Array.isArray(providers) ? providers : [])
         .filter((item) => item && item.status === 'failed')
-        .map((item) => modelMeta(item.name).name)
+        .map((item) => {
+          const failedMeta = modelMeta(item.name);
+          // `kind` is the server's classification (rate_limit, forbidden, …).
+          const why = item.kind === 'rate_limit' ? ' (rate limit)' : '';
+          return `${failedMeta.name} ${failedMeta.icon}${why}`;
+        })
     )];
     return `[System: Handled by ${label} ${meta.icon}]${failed.length ? ` · fallback from ${failed.join(', ')}` : ''}`;
+  }
+
+  /**
+   * One badge per provider the server reports. The markup is only the initial
+   * paint: if the server's chain does not mention a badge (an older backend,
+   * or a provider without a key on this deployment) that badge is faded out
+   * and its detail says why, so a stale markup entry can never claim health.
+   */
+  function reconcileModelBadges(providers) {
+    const reported = new Set((providers || []).map((provider) => provider?.name).filter(Boolean));
+    Object.keys(MODEL_LABELS).forEach((name) => {
+      if (reported.has(name)) return;
+      setModelBadge(name, 'off', 'این ارائه‌دهنده در فهرست سرور نیست');
+    });
   }
 
   function applyStatus(data) {
@@ -1058,6 +1084,7 @@
     setBadge('github', services.github?.connected, services.github?.reason || services.github?.login);
     setBadge('gitlab', services.gitlab?.connected, services.gitlab?.reason || services.gitlab?.login);
     setBadge('gdrive', services.gdrive?.connected, services.gdrive?.reason || services.gdrive?.email);
+    reconcileModelBadges(providers);
     applyProviderCatalog(providers);
 
     const connected = ['github', 'gitlab', 'gdrive'].filter((key) => services[key]?.connected).length;

@@ -29,7 +29,7 @@ const idList = (value) =>
     .filter((item) => Number.isFinite(item) && item > 0);
 
 /** Every provider name the failover chain understands, in canonical form. */
-export const AI_PROVIDERS = ['gemini', 'grok', 'deepseek'];
+export const AI_PROVIDERS = ['gemini', 'grok', 'deepseek', 'kimi'];
 
 /** Aliases accepted in AI_FALLBACK_ORDER (people write 'xai', 'google', …). */
 const PROVIDER_ALIASES = {
@@ -42,9 +42,16 @@ const PROVIDER_ALIASES = {
   'x.ai': 'grok',
   deepseek: 'deepseek',
   'deep-seek': 'deepseek',
+  kimi: 'kimi',
+  moonshot: 'kimi',
+  'moonshot-ai': 'kimi',
+  'kimi-k2': 'kimi',
 };
 
-const DEFAULT_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek'];
+// Gemini first (fastest and best at the agent protocol), then the two
+// OpenAI-compatible hops, then Kimi as the last resort. Every entry is
+// optional: a provider without a key is skipped, never counted as a failure.
+const DEFAULT_FALLBACK_ORDER = ['gemini', 'grok', 'deepseek', 'kimi'];
 
 /**
  * Normalise AI_FALLBACK_ORDER: lowercase, resolve aliases, drop names we do
@@ -114,6 +121,14 @@ export const settings = {
   deepseekModel: str(config.DEEPSEEK_MODEL) || 'deepseek-flash',
   deepseekBaseUrl: url(config.DEEPSEEK_BASE_URL, 'https://api.deepseek.com'),
 
+  // ── AI: Moonshot Kimi (OpenAI compatible) ────────────────────────────────
+  // Moonshot's current OpenAI-compatible host is api.moonshot.ai; the older
+  // api.moonshot.cn host only serves mainland-China accounts. K2.6+ and K3
+  // think by default, so the adapter asks for instant mode.
+  moonshotApiKey: str(config.MOONSHOT_API_KEY ?? config.KIMI_API_KEY),
+  kimiModel: str(config.KIMI_MODEL ?? config.MOONSHOT_MODEL) || 'kimi-k2.6',
+  kimiBaseUrl: url(config.KIMI_BASE_URL ?? config.MOONSHOT_BASE_URL, 'https://api.moonshot.ai/v1'),
+
   // ── AI: failover ─────────────────────────────────────────────────────────
   // Tried left to right; providers without a key are skipped.
   aiFallbackOrder: normaliseFallbackOrder(config.AI_FALLBACK_ORDER),
@@ -161,6 +176,8 @@ export function providerKey(name) {
     case 'gemini': return settings.geminiApiKey;
     case 'grok': return settings.xaiApiKey;
     case 'deepseek': return settings.deepseekApiKey;
+    // Accepts either MOONSHOT_API_KEY or the shorter KIMI_API_KEY alias.
+    case 'kimi': return settings.moonshotApiKey;
     default: return '';
   }
 }
@@ -171,6 +188,7 @@ export function providerModel(name) {
     case 'gemini': return settings.geminiModel;
     case 'grok': return settings.xaiModel;
     case 'deepseek': return settings.deepseekModel;
+    case 'kimi': return settings.kimiModel;
     default: return '';
   }
 }
@@ -183,7 +201,8 @@ export function isConfigured(service) {
     case 'gdrive': return Boolean(settings.googleServiceAccount?.client_email && settings.googleServiceAccount?.private_key);
     case 'gemini':
     case 'grok':
-    case 'deepseek': return Boolean(providerKey(service));
+    case 'deepseek':
+    case 'kimi': return Boolean(providerKey(service));
     default: return false;
   }
 }
@@ -196,6 +215,8 @@ export function isConfigured(service) {
 const RETIRED_MODELS = {
   grok: (model) => /^grok-4-fast/.test(model),
   deepseek: (model) => /^deepseek-(chat|reasoner)$/.test(model),
+  // Moonshot retired the K2 preview ids; `kimi-k2.6` and `kimi-k3` are current.
+  kimi: (model) => /^kimi-(latest|k2-(preview|turing)[\w-]*|moonshot[\w-]*)$/.test(model),
 };
 
 /** `[{ provider, model, replacement }]` for models that no longer resolve. */
@@ -211,6 +232,7 @@ function defaultModel(name) {
     case 'gemini': return 'gemini-3.5-flash';
     case 'grok': return 'grok-4.3';
     case 'deepseek': return 'deepseek-flash';
+    case 'kimi': return 'kimi-k2.6';
     default: return '';
   }
 }
@@ -226,6 +248,7 @@ export function integrationStatus() {
     gemini: isConfigured('gemini'),
     grok: isConfigured('grok'),
     deepseek: isConfigured('deepseek'),
+    kimi: isConfigured('kimi'),
     github: isConfigured('github'),
     gitlab: isConfigured('gitlab'),
     gdrive: isConfigured('gdrive'),
