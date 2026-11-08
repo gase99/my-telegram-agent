@@ -157,15 +157,24 @@ verified Telegram id, and only `endpoints/approve.js` runs them.
 
 ## Mini App
 
-Open it from the bot. It provides:
+Open it from the bot. It is a single dependency-free page with four tabs:
 
-- a scrolling terminal with safely escaped basic Markdown, LTR code blocks and paginated history
-- a processing status while the agent works, plus one line per executed operation
-- connection badges (GitHub / GitLab / Drive) that probe the real APIs, plus live **AI provider badges** (Gemini · Grok · DeepSeek · Kimi): green for the model that answered the last request, red for the ones that failed over, faded when no key is configured
-- a three-second dark splash screen with an animated AI star, model-name sequence and progress bar; it fades even when the backend is unavailable
-- approval/rejection cards for destructive actions (also restored on reload), connection refresh, and explicitly confirmed history clearing
-- Telegram/device safe-area handling, `100dvh` + live `visualViewport` keyboard-aware layout, LTR-isolated code, and duplicate-submit protection; text typed during a request stays in the composer
-- a clear Telegram-only connection notice outside the supported SDK environment; failed requests are not automatically retried because server-side actions may already have run
+**💬 گفتگو (chat)**
+- message bubbles with avatars, provider/model/latency/token chips, and a per-request operations card showing every executed action and its error
+- safe Markdown: headings, lists, quotes, tables, LTR fenced code blocks with a language badge and a copy button, inline code, and links — only `http(s)` URLs ever become anchors
+- skeleton shimmer while history loads, an animated typing indicator, in-conversation search, jump-to-latest with an unread counter, per-message copy, and one-tap "reuse prompt"
+- approval cards for destructive actions (also restored on reload) with a live expiry countdown, disabled while a decision is in flight, and a badge on the chat tab
+- quick-suggestion chips and a welcome card, filtered by which integrations actually have a token
+
+**📊 وضعیت (status)** — stored-message count, successful/failed operations, 24-hour activity, the AI failover chain with live per-provider state and latency (retired model ids flagged), integration probes with their failure reason, the operations this deployment can actually run, and the server limits.
+
+**🗂️ فعالیت (activity)** — the audit log (`agent_actions`) rolled up: totals, success/failure split, per-service counts, and a timeline of the latest runs.
+
+**⚙️ تنظیمات (settings)** — theme (auto / dark / light, auto follows `tg.colorScheme`), text size, animation and haptics toggles, compact density, refresh, copy the whole transcript, and explicitly confirmed history clearing. Preferences live in `localStorage`; nothing about them leaves the device.
+
+**Live execution dock.** While a request runs, a docked panel shows a spinning orb, an elapsed clock, a determinate-looking progress bar, and a five-stage trail. The stages are labelled as estimates — the server never streams intermediate state — and the dock resolves to green (done) or red (failed) with the real duration from `agent.elapsedMs`.
+
+**Also covered:** a three-second dark splash with an animated AI star, model-name sequence and progress bar that fades even when the backend is unavailable; Telegram safe-area and `100dvh` + live `visualViewport` keyboard handling; `prefers-reduced-motion` plus an in-app motion switch; RTL layout with LTR-isolated code, ids and timestamps; duplicate-submit protection (text typed during a request stays in the composer); and a clear Telegram-only notice outside the supported SDK environment. Failed requests are never retried automatically because server-side actions may already have run.
 
 The page talks to the backend only through `Telegram.WebApp.Serverless.call(...)`,
 which sends the verified init data; the Mini App never sees a token or key.
@@ -188,9 +197,9 @@ and cover the splash, safe-area/keyboard layout, LTR code and provider badges.
 
 | Name | Input | Purpose |
 |------|-------|---------|
-| `agent` | `{ prompt }` | one agent turn; returns `{ output, actions, pending }` |
+| `agent` | `{ prompt }` | one agent turn; returns `{ output, actions, pending, providers, elapsedMs, trace }` |
 | `getHistory` | `{ limit?, before? }` | paginated conversation for the terminal |
-| `getStatus` | `{}` | live connection status for each integration |
+| `getStatus` | `{}` | integrations, provider chain, activity counters, capabilities and limits for the status/activity tabs |
 | `approve` | `{ token, decision }` | run or reject a pending destructive action |
 | `clearHistory` | `{ confirm: true }` | wipe the caller's conversation |
 

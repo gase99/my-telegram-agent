@@ -34,10 +34,16 @@ executable code; the SDK reference is in [docs/tgcloud-sdk.md](docs/tgcloud-sdk.
 ## Mini App rules
 
 - The page is a single `miniapp/index.html` with no build step. It must not reference `localhost` or any backend URL: endpoints are called by name through `Telegram.WebApp.Serverless.call`.
-- Everything rendered from model output goes through `escapeHtml`/`renderMarkdown`; never inject raw text into `innerHTML`.
+- Layout is four tab panels (`chat` / `dash` / `activity` / `settings`) served from one document; `switchView` only toggles classes, and `refreshStatus` repaints **only the visible** panel so a re-render can't fight an interaction (e.g. the font slider).
+- Status and activity data come from `getStatus` (`activity`, `capabilities`, `limits`); never hard-code a service list in the page — render what the endpoint reports, or an integration with no token gets advertised.
+- Everything rendered from model output goes through `escapeHtml`/`renderInline`/`renderMarkdown`/`renderLine`, table cells included; never inject raw text into `innerHTML`. Links go through `safeUrl` (http/https only) before becoming anchors.
+- A message's raw text is stored on the node (`entry.__raw`) at render time: copy and reuse use `entryRawText()`, never `innerText`, which some Telegram webviews don't implement and which would drop code fences anyway.
+- The live execution dock is a client-side estimate: an elapsed wall clock plus a 5-stage trail. Do not present it as streamed server progress — endpoints are request/response and `agent` returns everything at once. On completion it uses the server's `elapsedMs`, `providers` and `fallback` flags.
 - Keep `direction: ltr; unicode-bidi: isolate` on code, ids, timestamps, and prompt symbols — the page is RTL and mixed content reorders otherwise.
 - Layout must follow `tg.viewportHeight` (live, not stable) plus `visualViewport`/`100dvh` outside Telegram so the composer stays above the keyboard, and use `env(safe-area-inset-*)` together with Telegram content insets for notches/chrome.
 - The `#splash` overlay is dismissed by an independent 3-second timer; do not make its removal await history, status or any network request. It must remain removable when `prefers-reduced-motion` suppresses `transitionend`.
+- Preferences (`terminal-ai:prefs` in `localStorage`) cover theme, font size, motion, haptics and compact density. Guard every storage access in `try/catch` — Telegram webviews can have storage disabled, and a throw there would kill the boot sequence.
+- Approval cards carry `expiresAt` from `pendingApprovals`/`createApproval` (24h, `APPROVAL_TTL_HOURS`, matching `expireOld`); the card counts down and must never re-enable itself while another decision is in flight (`state.approveBusy`).
 
 ## Setup and commands
 
