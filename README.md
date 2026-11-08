@@ -157,27 +157,20 @@ verified Telegram id, and only `endpoints/approve.js` runs them.
 
 ## Mini App
 
-Open it from the bot. It is a single dependency-free page with four tabs:
+Open it from the bot. The single dependency-free page uses a restrained dark dashboard with two primary views:
 
 **💬 گفتگو (chat)**
-- message bubbles with avatars, provider/model/latency/token chips, and a per-request operations card showing every executed action and its error
-- safe Markdown: headings, lists, quotes, tables, LTR fenced code blocks with a language badge and a copy button, inline code, and links — only `http(s)` URLs ever become anchors
-- skeleton shimmer while history loads, an animated typing indicator, in-conversation search, jump-to-latest with an unread counter, per-message copy, and one-tap "reuse prompt"
-- approval cards for destructive actions (also restored on reload) with a live expiry countdown, disabled while a decision is in flight, and a badge on the chat tab
-- quick-suggestion chips and a welcome card, filtered by which integrations actually have a token
+- compact user bubbles and clear assistant paragraphs with neon separators
+- safe Markdown for headings, lists, quotes, tables, code blocks, inline code and links; only `http(s)` URLs become anchors
+- conversation history, search, jump-to-latest, message copy/reuse, quick suggestions and destructive-action approval cards with expiry countdowns
+- dynamic GitHub and AI-provider status badges from `getStatus`, plus a small request-time estimate that never claims to be streamed server progress
 
-**📊 وضعیت (status)** — stored-message count, successful/failed operations, 24-hour activity, the AI failover chain with live per-provider state and latency (retired model ids flagged), integration probes with their failure reason, the operations this deployment can actually run, and the server limits.
+**⚙️ تنظیمات (settings/control panel)**
+- local dark/light appearance, preferred-model display, motion, haptics and compact-density controls
+- server-managed API-key status placeholders; the page never reads, stores or sends secret values
+- a collapsed status/activity section sourced from `getStatus`, with confirmed history clearing and refresh controls
 
-**🗂️ فعالیت (activity)** — the audit log (`agent_actions`) rolled up: totals, success/failure split, per-service counts, and a timeline of the latest runs.
-
-**⚙️ تنظیمات (settings)** — theme (auto / dark / light, auto follows `tg.colorScheme`), text size, animation and haptics toggles, compact density, refresh, copy the whole transcript, and explicitly confirmed history clearing. Preferences live in `localStorage`; nothing about them leaves the device.
-
-**Live execution dock.** While a request runs, a docked panel shows a spinning orb, an elapsed clock, a determinate-looking progress bar, and a five-stage trail. The stages are labelled as estimates — the server never streams intermediate state — and the dock resolves to green (done) or red (failed) with the real duration from `agent.elapsedMs`.
-
-**Also covered:** a three-second dark splash with an animated AI star, model-name sequence and progress bar that fades even when the backend is unavailable; Telegram safe-area and `100dvh` + live `visualViewport` keyboard handling; `prefers-reduced-motion` plus an in-app motion switch; RTL layout with LTR-isolated code, ids and timestamps; duplicate-submit protection (text typed during a request stays in the composer); and a clear Telegram-only notice outside the supported SDK environment. Failed requests are never retried automatically because server-side actions may already have run.
-
-The page talks to the backend only through `Telegram.WebApp.Serverless.call(...)`,
-which sends the verified init data; the Mini App never sees a token or key.
+The splash lasts three seconds independently of backend availability. The layout follows Telegram's safe-area/content insets and live `viewportHeight`, `visualViewport` and `100dvh` so the composer remains usable around the mobile keyboard. Reduced-motion preferences and RTL/LTR isolation are respected. Requests are sent only through `Telegram.WebApp.Serverless.call(...)`; the browser never calls a backend URL directly, and failed requests are not retried automatically because server-side actions may already have run.
 
 ## Tests
 
@@ -197,9 +190,9 @@ and cover the splash, safe-area/keyboard layout, LTR code and provider badges.
 
 | Name | Input | Purpose |
 |------|-------|---------|
-| `agent` | `{ prompt }` | one agent turn; returns `{ output, actions, pending, providers, elapsedMs, trace }` |
+| `agent` | `{ prompt, action?: 'chat' | 'execute' }` | chat runs an agent turn; execute runs bounded Python through Piston. Chat returns `{ output, actions, pending, providers, elapsedMs, trace }` |
 | `getHistory` | `{ limit?, before? }` | paginated conversation for the terminal |
-| `getStatus` | `{}` | integrations, provider chain, activity counters, capabilities and limits for the status/activity tabs |
+| `getStatus` | `{}` | integrations, provider chain, activity counters, capabilities and limits for the settings control panel |
 | `approve` | `{ token, decision }` | run or reject a pending destructive action |
 | `clearHistory` | `{ confirm: true }` | wipe the caller's conversation |
 
